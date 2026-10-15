@@ -4,12 +4,20 @@
  * В базе лежат «сырые» проекты: метаданные документа + PNG-каждого слоя
  * + превью. Такой формат переживает перезагрузку страницы и не зависит
  * от версии кода (внутри есть поле version для будущих миграций).
+ *
+ * Версия 2 добавила stores библиотеки готовых работ:
+ *   artworks      — метаданные картинки + превью (лёгкие, тянутся списком)
+ *   artworkImages — полноразмерный PNG (тяжёлый, тянется по id)
+ * Полноразмерные картинки лежат отдельно, иначе список на 100 работ
+ * поднимал бы из базы десятки мегабайт.
  */
 
 const DB_NAME = 'inkforge';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_PROJECTS = 'projects';
 const STORE_THUMBS = 'thumbs';
+const STORE_ARTWORKS = 'artworks';
+const STORE_ART_IMAGES = 'artworkImages';
 
 export class ProjectStore {
   constructor() {
@@ -25,7 +33,7 @@ export class ProjectStore {
 
     this.db = await new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
+      req.onupgradeneeded = (e) => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE_PROJECTS)) {
           const store = db.createObjectStore(STORE_PROJECTS, { keyPath: 'id' });
@@ -34,6 +42,15 @@ export class ProjectStore {
         if (!db.objectStoreNames.contains(STORE_THUMBS)) {
           db.createObjectStore(STORE_THUMBS, { keyPath: 'id' });
         }
+        // Библиотека готовых работ
+        if (!db.objectStoreNames.contains(STORE_ARTWORKS)) {
+          const store = db.createObjectStore(STORE_ARTWORKS, { keyPath: 'id' });
+          store.createIndex('updatedAt', 'updatedAt');
+        }
+        if (!db.objectStoreNames.contains(STORE_ART_IMAGES)) {
+          db.createObjectStore(STORE_ART_IMAGES, { keyPath: 'id' });
+        }
+        void e;
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -44,7 +61,7 @@ export class ProjectStore {
     return this.db;
   }
 
-  #tx(store, mode, fn) {
+  tx(store, mode, fn) {
     return this.open().then((db) => new Promise((resolve, reject) => {
       const tx = db.transaction(store, mode);
       const req = fn(tx.objectStore(store));
@@ -99,11 +116,11 @@ export class ProjectStore {
       layers,
     };
 
-    await this.#tx(STORE_PROJECTS, 'readwrite', (s) => s.put(record));
+    await this.tx(STORE_PROJECTS, 'readwrite', (s) => s.put(record));
 
     try {
       const thumb = await app.thumbnail();
-      await this.#tx(STORE_THUMBS, 'readwrite', (s) => s.put({ id, thumb, updatedAt: record.updatedAt }));
+      await this.tx(STORE_THUMBS, 'readwrite', (s) => s.put({ id, thumb, updatedAt: record.updatedAt }));
     } catch { /* превью не критично */ }
 
     return id;
@@ -125,7 +142,7 @@ export class ProjectStore {
 
   /** Возвращает {doc, project} — документ собран из сохранённых слоёв */
   async load(id) {
-    const record = await this.#tx(STORE_PROJECTS, 'readonly', (s) => s.get(id));
+    const record = await this.tx(STORE_PROJECTS, 'readonly', (s) => s.get(id));
     if (!record) throw new Error('Проект не найден');
 
     const { Document } = await import('../core/doc.js');
@@ -153,8 +170,8 @@ export class ProjectStore {
 
   /** Список сохранённых проектов (без пикселей) */
   async list() {
-    const all = await this.#tx(STORE_PROJECTS, 'readonly', (s) => s.getAll());
-    const thumbs = await this.#tx(STORE_THUMBS, 'readonly', (s) => s.getAll());
+    const all = await this.tx(STORE_PROJECTS, 'readonly', (s) => s.getAll());
+    const thumbs = await this.tx(STORE_THUMBS, 'readonly', (s) => s.getAll());
     const thumbMap = new Map(thumbs.map((t) => [t.id, t.thumb]));
     return (all || [])
       .map((p) => ({
@@ -170,8 +187,8 @@ export class ProjectStore {
   }
 
   async delete(id) {
-    await this.#tx(STORE_PROJECTS, 'readwrite', (s) => s.delete(id));
-    await this.#tx(STORE_THUMBS, 'readwrite', (s) => s.delete(id));
+    await this.tx(STORE_PROJECTS, 'readwrite', (s) => s.delete(id));
+    await this.tx(STORE_THUMBS, 'readwrite', (s) => s.delete(id));
   }
 
   /** Приблизительный объём, занятый проектами */
@@ -181,6 +198,20 @@ export class ProjectStore {
       return { usage, quota };
     }
     return null;
+  }
+
+  /** Записи одной транзакцией — так быстрее, чем открывать базу на каждую операцию */
+  async bulk(store, mode, records) {
+    if (!records.length) return;
+    await new Promise((resolve, reject) => {
+      this.open().then((db) => {
+        const tx = db.transaction(store, mode);
+        const os = tx.objectStore(store);
+        for (const rec of records) os.put(rec);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      }).catch(reject);
+    });
   }
 }
 

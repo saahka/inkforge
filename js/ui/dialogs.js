@@ -3,7 +3,7 @@
  * сохранение/открытие проекта, справка.
  */
 
-import { el, qs } from '../utils/dom.js';
+import { el, qs, debounce } from '../utils/dom.js';
 import { formatDate, formatBytes, clamp } from '../utils/math.js';
 import { createDocument } from '../core/doc.js';
 import { projectStore } from '../storage/project-store.js';
@@ -12,6 +12,7 @@ import {
   openAny, imageToLayer, imageToDocument, supportsFsAccess, FILE_FORMAT,
 } from '../utils/file.js';
 import { notify } from './notify.js';
+import { library } from '../storage/library.js';
 
 const PRESET_SIZES = [
   { label: 'A4 150 dpi', w: 1240, h: 1754 },
@@ -400,6 +401,18 @@ export async function openDialogExport(app) {
       const name = (app.doc.name || 'image').replace(/[^\wа-яё\- ]/gi, '');
       const { aborted } = await saveBlobAs(blob, `${name || 'image'}.${format.value}`, 'image');
       if (!aborted) notify(`Экспортировано: ${formatBytes(blob.size)}`, 'ok');
+
+      // Если включено автосохранение — кладём результат в библиотеку,
+      // чтобы работа не потерялась после закрытия вкладки
+      if (!aborted && library.autoSave && projectStore.available) {
+        try {
+          if (!app.projectId) await projectStore.save(app);
+          await library.capture(app, { title: app.doc.name });
+          notify('Работа добавлена в библиотеку', 'ok');
+        } catch (err) {
+          notify(`Не удалось сохранить в библиотеку: ${err.message}`, 'error');
+        }
+      }
     } catch (err) {
       notify(err.message, 'error');
     }
@@ -421,6 +434,205 @@ export async function openDialogExport(app) {
       { label: 'Экспортировать', primary: true, action: doExport },
     ],
   });
+}
+
+/* ─── Библиотека готовых работ ──────────────────────────────────── */
+
+/**
+ * Диалог сохранения текущей работы в библиотеку.
+ * Вызывается из меню, панели и по Ctrl+Shift+L.
+ */
+export async function openArtworkDialog(app) {
+  if (!projectStore.available) {
+    notify('Библиотея недоступна: браузер не даёт доступ к IndexedDB', 'error');
+    return null;
+  }
+  const suggested = `${app.doc.name || 'Без имени'}`.trim() || 'Без имени';
+  const title = el('input.field__text', { type: 'text', value: suggested });
+  const note = el('input.field__text', { type: 'text', placeholder: 'Заметка (необязательно)' });
+  const size = `${app.doc.width} × ${app.doc.height} px · ${app.doc.layers.length} сл.`;
+
+  const doSave = async (close) => {
+    try {
+      // Сначала сохраняем проект — тогда работу можно будет открыть со слоями
+      if (!app.projectId) await projectStore.save(app);
+      const item = await library.capture(app, { title: title.value, note: note.value });
+      close();
+      notify(`Работа «${item.title}» сохранена в библиотеку`, 'ok');
+      return item;
+    } catch (err) {
+      notify(err.message, 'error');
+      return null;
+    }
+  };
+
+  modal({
+    title: 'Сохранить в библиотеку',
+    body: [
+      el('p.field__label', { text: size }),
+      el('div.field', null, [el('span.field__label', { text: 'Название работы' }), title]),
+      el('div.field', null, [el('span.field__label', { text: 'Заметка' }), note]),
+      el('p.field__label', {
+        text: 'Проект тоже будет сохранён — работу можно будет открыть вместе со слоями.',
+      }),
+    ],
+    buttons: [
+      { label: 'Отмена', action: (close) => close() },
+      { label: 'Сохранить', primary: true, action: doSave },
+    ],
+  });
+
+  title.focus();
+  title.select();
+}
+
+/** Большая библиотека: поиск, сортировка, действия над карточками */
+export async function openLibraryDialog(app) {
+  await library.ensureLoaded();
+
+  const search = el('input.field__text', { type: 'search', placeholder: 'Поиск по названию или заметке' });
+  const sort = el('select.field__select', null, [
+    el('option', { value: 'date', text: 'Сначала новые' }),
+    el('option', { value: 'name', text: 'По названию' }),
+    el('option', { value: 'size', text: 'По размеру' }),
+  ]);
+  const grid = el('div.gallery-grid');
+
+  const render = () => {
+    const list = library.query({ search: search.value, sort: sort.value });
+    grid.replaceChildren();
+
+    if (!list.length) {
+      grid.append(el('p.field__label', {
+        style: { gridColumn: '1 / -1', textAlign: 'center', padding: '16px' },
+        text: library.items.length
+          ? 'Ничего не найдено'
+          : 'Библиотека пуста. Сохраните работу через Ctrl+Shift+L.',
+      }));
+      return;
+    }
+
+    for (const item of list) {
+      const card = el('div.gallery-card', { title: item.note || item.title }, [
+        el('img.gallery-card__thumb', { src: item.thumb, alt: item.title }),
+        el('div.gallery-card__meta', null, [
+          el('div.gallery-card__name', {
+            text: (item.starred ? '★ ' : '') + item.title,
+            ondblclick: (e) => {
+              const v = prompt('Название работы', item.title);
+              if (v && v.trim() && v !== item.title) library.setTitle(item.id, v);
+              void e;
+            },
+          }),
+          el('div.gallery-card__date', {
+            text: `${item.width}×${item.height} · ${formatDate(item.updatedAt)}`
+              + (item.projectId ? ' · проект' : ''),
+          }),
+        ]),
+      ]);
+
+      const actions = el('div', { style: { display: 'flex', gap: '4px', padding: '0 8px 8px' } }, [
+        el('button.btn.btn--ghost', { text: 'Открыть', onclick: async () => {
+          try {
+            const how = await library.open(item.id, app);
+            closeModal();
+            notify(how === 'project' ? 'Открыт проект' : 'Открыто изображение', 'ok');
+          } catch (err) { notify(err.message, 'error'); }
+        } }),
+        el('button.btn.btn--ghost', { text: 'PNG', onclick: async () => {
+          await library.downloadDirect(item.id);
+        } }),
+        el('button.btn.btn--ghost', { text: item.starred ? '★' : '☆', onclick: () => library.toggleStar(item.id) }),
+        el('button.btn.btn--ghost.btn--danger', { text: '🗑', onclick: async () => {
+          if (!(await confirmDialog('Удалить работу?', `«${item.title}» будет удалена.`, { danger: true, okLabel: 'Удалить' }))) return;
+          await library.remove(item.id);
+        } }),
+      ]);
+      card.append(actions);
+      grid.append(card);
+    }
+  };
+
+  search.addEventListener('input', debounce(render, 150));
+  sort.addEventListener('change', render);
+
+  modal({
+    title: 'Библиотека работ',
+    body: [
+      el('div.row-2', null, [search, sort]),
+      el('p.field__label', { id: 'libraryStats' }),
+      grid,
+    ],
+    buttons: [
+      { label: 'Закрыть', primary: true, action: (close) => close() },
+      { label: 'Очистить библиотеку', danger: true, action: async (close) => {
+        if (!library.items.length) return;
+        if (!(await confirmDialog('Очистить библиотеку?',
+          `Будет удалено работ: ${library.items.length}. Действие необратимо.`,
+          { danger: true, okLabel: 'Очистить' }))) return;
+        await library.clear();
+        close();
+        notify('Библиотека очищена', 'ok');
+      } },
+    ],
+  });
+
+  library.on('change', render);
+  render();
+}
+
+/** Скачивание работы в выбранном формате */
+export async function openArtworkExportDialog(app, item) {
+  const format = el('select.field__select', null, [
+    el('option', { value: 'png', text: 'PNG (с альфой)' }),
+    el('option', { value: 'jpeg', text: 'JPEG' }),
+    el('option', { value: 'webp', text: 'WebP' }),
+  ]);
+  const scale = el('select.field__select', null, [
+    el('option', { value: '1', text: 'Оригинал' }),
+    el('option', { value: '0.5', text: '50%' }),
+    el('option', { value: '2', text: '200%' }),
+  ]);
+
+  modal({
+    title: `Скачать «${item.title}»`,
+    body: [
+      el('p.field__label', { text: `${item.width} × ${item.height} px` }),
+      el('div.row-2', null, [
+        el('div.field', null, [el('span.field__label', { text: 'Формат' }), format]),
+        el('div.field', null, [el('span.field__label', { text: 'Размер' }), scale]),
+      ]),
+    ],
+    buttons: [
+      { label: 'Отмена', action: (close) => close() },
+      { label: 'Скачать', primary: true, action: async (close) => {
+        close();
+        try {
+          if (scale.value === '1') {
+            const ok = await library.download(item.id, format.value);
+            if (ok) notify('Файл сохранён', 'ok');
+            return;
+          }
+          // Масштабирование: перерисовываем картинку работы
+          const src = await library.canvasOf(item.id);
+          const k = +scale.value;
+          const out = document.createElement('canvas');
+          out.width = Math.max(1, Math.round(src.width * k));
+          out.height = Math.max(1, Math.round(src.height * k));
+          const ctx = out.getContext('2d');
+          ctx.imageSmoothingQuality = 'high';
+          ctx.drawImage(src, 0, 0, out.width, out.height);
+          const blob = await exportImage(out, format.value, { background: '#ffffff' });
+          const safe = item.title.replace(/[^\wа-яё\- ]/gi, '') || 'artwork';
+          const { aborted } = await saveBlobAs(blob, `${safe}.${format.value}`, 'image');
+          if (!aborted) notify('Файл сохранён', 'ok');
+        } catch (err) {
+          notify(err.message, 'error');
+        }
+      } },
+    ],
+  });
+  void app;
 }
 
 /* ─── О программе / горячие клавиши ───────────────────────────────── */

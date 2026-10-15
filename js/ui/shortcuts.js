@@ -6,7 +6,7 @@
 import { clamp } from '../utils/math.js';
 import {
   openDialogNew, openDialogOpenProject, openDialogSaveProject,
-  openDialogGallery, openDialogAbout, openDialogExport,
+  openDialogGallery, openDialogAbout, openDialogExport, openArtworkDialog,
 } from './dialogs.js';
 import { notify } from './notify.js';
 
@@ -105,6 +105,8 @@ export function buildShortcutTable(app) {
     { key: 'ctrl+n', label: 'Ctrl+N', run: () => openDialogNew(app) },
     { key: 'ctrl+o', label: 'Ctrl+O', run: () => openDialogOpenProject(app) },
     { key: 'ctrl+shift+g', label: 'Ctrl+⇧G', run: () => openDialogGallery(app) },
+    { key: 'ctrl+shift+l', label: 'Ctrl+⇧L', run: () => openArtworkDialog(app) },
+    { key: 'ctrl+shift+b', label: 'Ctrl+⇧B', run: () => app.emit('toggleLibraryPanel') },
 
     // ─── Вид ───
     { key: 'ctrl+0', label: 'Ctrl+0', run: () => app.viewport.actualSize(app.doc.width, app.doc.height) },

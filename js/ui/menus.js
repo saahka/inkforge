@@ -5,9 +5,13 @@
  */
 
 import { el, qs } from '../utils/dom.js';
+import { library } from '../storage/library.js';
+import { projectStore } from '../storage/project-store.js';
+import { notify } from './notify.js';
 import {
   openDialogNew, openDialogResize, openDialogGallery, openDialogAbout,
   openDialogExport, openDialogSaveProject, openDialogOpenProject,
+  openArtworkDialog, openLibraryDialog, confirmDialog,
 } from './dialogs.js';
 
 const layer = () => document.getElementById('menuLayer');
@@ -90,6 +94,20 @@ export function showDropdown(anchor, items) {
 
 export function buildMenuDefinition(app) {
   const L = () => app.doc.activeLayer;
+
+  /** Последние 5 работ из библиотеки — быстрый доступ из меню */
+  const recentLibraryItems = () => library.items.slice(0, 5).map((item) => ({
+    label: `${item.starred ? '★ ' : ''}${item.title}`,
+    action: async () => {
+      try {
+        const how = await library.open(item.id, app);
+        notify(how === 'project' ? `Открыт проект «${item.title}»` : `Открыто изображение «${item.title}»`, 'ok');
+      } catch (err) {
+        notify(err.message, 'error');
+      }
+    },
+  }));
+
   const layerItems = () => (L() ? [
     { label: 'Новый слой', key: 'Ctrl+Shift+N', action: () => app.layers.addLayer({ record: true }) },
     { label: 'Дублировать слой', key: 'Ctrl+J', action: () => app.layers.duplicateLayer(L().id) },
@@ -160,6 +178,47 @@ export function buildMenuDefinition(app) {
       ],
     },
     {
+      label: 'Библиотека',
+      items: () => [
+        {
+          label: 'Сохранить арт в библиотеку…',
+          key: 'Ctrl+Shift+L',
+          disabled: !projectStore.available,
+          action: () => openArtworkDialog(app),
+        },
+        {
+          label: 'Открыть библиотеку…',
+          disabled: !library.items.length,
+          action: () => openLibraryDialog(app),
+        },
+        { sep: true },
+        ...recentLibraryItems(),
+        ...(library.items.length ? [{ sep: true }] : []),
+        {
+          label: 'Автосохранять результаты',
+          checked: library.autoSave,
+          action: () => library.setAutoSave(!library.autoSave),
+        },
+        {
+          label: 'Показать панель библиотеки',
+          action: () => app.emit('toggleLibraryPanel'),
+        },
+        { sep: true },
+        {
+          label: 'Очистить библиотеку…',
+          danger: true,
+          disabled: !library.items.length,
+          action: async () => {
+            if (!(await confirmDialog('Очистить библиотеку?',
+              `Будет удалено работ: ${library.items.length}. Действие необратимо.`,
+              { danger: true, okLabel: 'Очистить' }))) return;
+            await library.clear();
+            notify('Библиотека очищена', 'ok');
+          },
+        },
+      ],
+    },
+    {
       label: 'Вид',
       items: [
         { label: 'Увеличить', key: 'Ctrl++', action: () => app.viewport.setScale(app.viewport.scale * 1.25) },
@@ -221,6 +280,7 @@ export function initMenus(app) {
   app.on('layers', debounced(rebuild));
   app.on('selection', rebuild);
   app.on('doc', rebuild);
+  library.on('change', debounced(rebuild));   // пункты «последние работы»
 
   rebuild();
   return { rebuild };

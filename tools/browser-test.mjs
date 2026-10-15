@@ -636,6 +636,100 @@ const SCENARIO = `
   check('в поле ввода хоткеи не срабатывают', app.toolId === 'brush');
   field.blur();
 
+  /* ── Библиотека готовых работ ─────────────────────────────── */
+
+  const { library } = await import('./js/storage/library.js');
+  await library.ensureLoaded();
+
+  // Чистим, чтобы проверка не зависела от предыдущих запусков
+  await library.clear();
+  check('библиотека очищена перед тестом', library.items.length === 0, '�����=' + library.items.length + ' ' + JSON.stringify(library.items).slice(0,300));
+
+  app.setColor({ r: 240, g: 120, b: 60 }, 'fg');
+  app.beginStroke({ x: 50, y: 50, pressure: 1, tilt: 0 }, {});
+  app.extendStroke([{ x: 300, y: 300, pressure: 1, tilt: 0 }]);
+  app.commitStroke();
+
+  const art1 = await library.capture(app, { title: 'Тестовый арт' });
+  check('работа попала в библиотеку', library.items.length === 1, 'работ=' + library.items.length);
+  check('у работы есть превью', typeof art1.thumb === 'string' && art1.thumb.startsWith('data:image/webp'));
+  check('размеры записаны', art1.width === app.doc.width && art1.height === app.doc.height,
+    art1.width + 'x' + art1.height);
+
+  const artBlob = await library.imageBlob(art1.id);
+  check('картинка сохранена в IndexedDB', artBlob && artBlob.size > 100, 'байт=' + (artBlob ? artBlob.size : 0));
+
+  // Переименование, звёзда, заметка
+  await library.setTitle(art1.id, 'Закат над морем');
+  await library.toggleStar(art1.id);
+  check('переименование и избранное работают',
+    library.get(art1.id).title === 'Закат над морем' && library.get(art1.id).starred === true);
+  check('поиск находит по названию',
+    library.query({ search: 'морем' }).length === 1);
+  check('поиск по избранному отрабатывает',
+    library.query({ starredOnly: true }).length === 1);
+  check('поиск без совпадений пуст',
+    library.query({ search: 'дракон' }).length === 0);
+
+  // Сортировка по дате: новая работа сверху
+  const art2 = await library.capture(app, { title: 'Второй арт' });
+  check('сортировка по дате — новое сверху', library.query({ sort: 'date' })[0].id === art2.id);
+  check('сортировка по названию работает', library.query({ sort: 'name' })[0].title === 'Второй арт');
+
+  // Открытие работы: проект привязан, т.к. app.projectId мог быть null
+  const how = await library.open(art1.id, app);
+  check('работа открывается', how === 'project' || how === 'image', how);
+
+  // Открытие без проекта — как изображение
+  await library.update(art2.id, { projectId: null });
+  const { createDocument: cd } = await import('./js/core/doc.js');
+  app.setDocument(cd({ width: 640, height: 480, name: 'Пусто' }));
+  const how2 = await library.open(art2.id, app);
+  check('работа без проекта открывается как изображение', how2 === 'image', how2);
+  check('размер документа взят из картинки',
+    app.doc.width === art2.width && app.doc.height === art2.height,
+    app.doc.width + 'x' + app.doc.height);
+
+  // Удаление
+  await library.remove(art1.id);
+  check('работа удаляется', library.items.length === 1 && !library.get(art1.id));
+  const gone = await library.imageBlob(art1.id).then(() => false, () => true);
+  check('картинка удалённой работы тоже удалена', gone);
+
+  // Панель библиотеки
+  document.querySelector('#panelLibrary').classList.remove('is-collapsed');
+  library.on('change', () => {});
+  await library.load();
+  await new Promise(r => setTimeout(r, 60));
+  const cards = document.querySelectorAll('#libraryGrid .lib-card');
+  check('панель показывает карточки', cards.length === library.items.length,
+    'карточек=' + cards.length + ' работ=' + library.items.length);
+  document.querySelector('#librarySearch').value = 'неттакого';
+  document.querySelector('#librarySearch').dispatchEvent(new Event('input', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 200));
+  check('поиск в панели фильтрует',
+    !!document.querySelector('#libraryGrid .library-empty'));
+  document.querySelector('#librarySearch').value = '';
+  document.querySelector('#librarySearch').dispatchEvent(new Event('input', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 200));
+
+  // Меню содержит пункт «Библиотека» с последними работами
+  const libBtn = [...document.querySelectorAll('#menus .menu-item')]
+    .find(b => b.textContent === 'Библиотека');
+  check('в меню есть пункт «Библиотека»', !!libBtn, '�������=' + document.querySelectorAll('#menus .menu-item').length + ' :: ' + [...document.querySelectorAll('#menus .menu-item')].map(b => b.textContent).join(','));
+  if (!libBtn) return results;
+  libBtn.click();
+  await new Promise(r => setTimeout(r, 50));
+  const libItems = [...document.querySelectorAll('#menuLayer .menu-entry')].map(b => b.textContent);
+  check('меню библиотеки показывает работы',
+    libItems.some(t => t.includes('Второй арт')), libItems.join(' / ').slice(0, 120));
+  const saveEntry = libItems.find(t => t.includes('Сохранить арт'));
+  check('в меню есть «Сохранить арт»', !!saveEntry);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await new Promise(r => setTimeout(r, 50));
+
+  await library.clear();
+
   return results;
 `;
 

@@ -26,6 +26,8 @@ export function el(spec, props = null, children = null) {
       else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
       else if (k === 'html') node.innerHTML = v;
       else if (k === 'text') node.textContent = v;
+      // Классы из спецификации (el('div.card', …)) нельзя затирать свойством class
+      else if (k === 'class') node.className = [node.className, v].filter(Boolean).join(' ');
       else if (k in node && k !== 'list') node[k] = v;
       else node.setAttribute(k, v);
     }

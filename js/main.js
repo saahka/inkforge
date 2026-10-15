@@ -6,12 +6,14 @@
 import { App } from './core/app.js';
 import { InputHandler } from './core/input-handler.js';
 import { projectStore } from './storage/project-store.js';
+import { library } from './storage/library.js';
 import { initToolPanel, initColorPanel, initLayersPanel, initHistoryPanel } from './ui/panels.js';
+import { initLibraryPanel, bindLibraryToApp } from './ui/library-panel.js';
 import { initMenus } from './ui/menus.js';
 import { installShortcuts } from './ui/shortcuts.js';
 import { initStatusBar } from './ui/statusbar.js';
 import { notify, notifyError } from './ui/notify.js';
-import { promptOpenImage, closeModal } from './ui/dialogs.js';
+import { promptOpenImage, closeModal, openArtworkDialog } from './ui/dialogs.js';
 import { qs, qsa, on, debounce, bindDropZone } from './utils/dom.js';
 import { imageToDocument } from './utils/file.js';
 
@@ -46,6 +48,8 @@ function boot() {
   initColorPanel(app);
   initLayersPanel(app);
   initHistoryPanel(app);
+  initLibraryPanel(app);
+  bindLibraryToApp(app);
   initMenus(app);
   const status = initStatusBar(app);
   installShortcuts(app);
@@ -76,6 +80,15 @@ function boot() {
     document.documentElement.dataset.showKeys = on_ ? '1' : '0';
   });
   app.on('openImageDialog', () => promptOpenImage(app));
+app.on('library', () => { /* панель и меню подписаны сами */ });
+  app.on('toggleLibraryPanel', () => {
+    const panel = qs('#panelLibrary');
+    if (!panel) return;
+    panel.classList.remove('is-collapsed');
+    const btn = panel.querySelector('[data-collapse]');
+    if (btn) btn.textContent = '–';
+    requestAnimationFrame(() => app.renderer.resize());
+  });
   app.on('doAutosave', () => {
     projectStore.autosave(app).then((ok) => { if (ok) app.markSaved(); });
   });
@@ -92,14 +105,16 @@ function boot() {
     e.returnValue = '';
   });
 
-  // ─── Открытие базы при старте ───
-  projectStore.open().catch((err) => {
-    notifyError(err);
-    notify('Проекты не будут сохраняться: IndexedDB недоступна', 'error');
-  });
+// ─── Открытие базы при старте ───
+  projectStore.open()
+    .then(() => library.ensureLoaded())
+    .catch((err) => {
+      notifyError(err);
+      notify('Проекты не будут сохраняться: IndexedDB недоступна', 'error');
+    });
 
-  // ─── Отладочный доступ ───
-  globalThis.INKFORGE = { app, input, projectStore, closeModal };
+// ─── Отладочный доступ ───
+  globalThis.INKFORGE = { app, input, projectStore, library, closeModal };
 }
 
 /* ─── Панель инструментов ─────────────────────────────────────────── */

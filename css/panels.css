@@ -336,7 +336,121 @@ details[open] > summary::before { content: "▾ "; }
 .history-item__dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-faint); flex: none; }
 .history-item.is-current .history-item__dot { background: var(--accent); }
 
-/* ─── Галерея проектов ─────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════
+   Библиотека готовых работ
+   ══════════════════════════════════════════════════════════════════ */
+
+#panelLibrary .panel__body { min-height: 150px; }
+
+.library-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.library-search { min-width: 0; }
+.library-sort { width: 108px; flex: none; }
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 7px;
+  padding: 8px;
+  overflow: auto;
+  align-content: start;
+  max-height: 330px;
+  min-height: 90px;
+}
+
+.lib-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-chrome-2);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color .12s, transform .12s;
+}
+.lib-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.lib-card.is-starred { border-color: var(--warn); }
+
+.lib-card__thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  display: block;
+  background: var(--bg-sunken);
+}
+
+.lib-card__body { padding: 5px 6px 7px; min-width: 0; line-height: 1.35; }
+.lib-card__title {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lib-card__title[contenteditable="true"] {
+  outline: 1px solid var(--accent);
+  border-radius: 2px;
+  user-select: text;
+}
+.lib-card__meta {
+  font-size: 9px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-card__star {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.lib-card:hover .lib-card__star,
+.lib-card.is-starred .lib-card__star { opacity: 1; }
+.lib-card.is-starred .lib-card__star { color: var(--warn); }
+
+.lib-card__link {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  font-size: 9px;
+  pointer-events: none;
+  opacity: 0;
+}
+.lib-card:hover .lib-card__link { opacity: 1; }
+
+.library-empty {
+  grid-column: 1 / -1;
+  padding: 18px 10px;
+  text-align: center;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* ─── Галерея проектов (проекты, не работы) ──────────────────── */
 
 .gallery-grid {
   display: grid;
