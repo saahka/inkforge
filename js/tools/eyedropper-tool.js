@@ -2,11 +2,13 @@
  * Пипетка. Берёт цвет из итогового изображения (с учётом видимости,
  * прозрачности и режимов наложения всех слоёв).
  *
- * Alt+клик по кистью временно переключает её на пипетку —
+ * Alt+клик по кисти временно переключает её на пипетку —
  * так удобнее всего выбирать цвет из уже нарисованного.
+ *
+ * Важно: цвет под курсором НЕ читается из экранного canvas на каждом кадре.
+ * Он кэшируется в app.hoverColor и обновляется только при движении мыши —
+ * иначе мы делали бы getImageData() 60 раз в секунду.
  */
-
-import { toStrokePoint } from './brush-tool.js';
 
 export function eyedropperTool(app) {
   let sampling = false;
@@ -35,43 +37,32 @@ export function eyedropperTool(app) {
 
     onPointerDown(c) {
       sampling = true;
+      app.hoverColor = app.sampleComposite(c.x, c.y);
       pick(c.x, c.y, c.alt ? 'bg' : this.settings.target);
     },
 
     onPointerMove(c) {
       app.renderer.cursor = { x: c.x, y: c.y };
-      if (!sampling) {
-        // При Alt показываем цвет под курсором в подсказке панели
-        const px = app.sampleComposite(c.x, c.y);
-        app.emit('hoverColor', px);
-        return;
-      }
-      pick(c.x, c.y, c.alt ? 'bg' : this.settings.target);
+      app.hoverColor = app.sampleComposite(c.x, c.y);
+      if (sampling) pick(c.x, c.y, c.alt ? 'bg' : this.settings.target);
     },
 
     onPointerUp() { sampling = false; },
     onPointerCancel() { sampling = false; },
+    onDeactivate() { sampling = false; },
 
-    /** Превью цвета под курсором (маленький квадрат) */
+    /** Превью цвета под курсором — рисуем кэш, без чтения пикселей */
     drawOverlay(ctx, renderer) {
-      if (!renderer.cursor) return;
-      const px = app.sampleComposite(renderer.cursor.x, renderer.cursor.y);
-      if (!px) return;
+      const px = app.hoverColor;
+      if (!px || !renderer.cursor) return;
       const p = renderer.viewport.worldToScreen(renderer.cursor.x, renderer.cursor.y);
       ctx.save();
-      ctx.fillStyle = `rgb(${px.r},${px.g},${px.b})`;
+      ctx.fillStyle = `rgba(${px.r},${px.g},${px.b},${Math.max(0.15, px.a)})`;
       ctx.strokeStyle = 'rgba(0,0,0,.7)';
       ctx.lineWidth = 1;
       ctx.fillRect(p.x + 10, p.y + 10, 18, 18);
       ctx.strokeRect(p.x + 10.5, p.y + 10.5, 18, 18);
       ctx.restore();
     },
-
-    onDeactivate() { sampling = false; },
   };
 }
-
-/** Утилита для горячих клавиш: пипетка с Alt работает поверх кисти */
-export const altEyedropperEnabled = () => typeof PointerEvent !== 'undefined';
-
-export { toStrokePoint };

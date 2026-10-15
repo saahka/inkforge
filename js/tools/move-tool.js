@@ -5,15 +5,17 @@
  *    и само выделение едет вместе с содержимым;
  *  • Ctrl+тяга — копирует содержимое вместо перемещения.
  *
- * Отмена реализована одной командой: снимок области возвращается
- * на исходное место, а область назначения очищается.
+ * Отмена: история получает НЕИЗМЕНЯЕМЫЙ снимок операции (прямоугольник,
+ * пиксели, смещение). Инструмент после `onPointerUp` своё состояние
+ * обнуляет, поэтому держаться за него в команде нельзя — так отмена
+ * падала бы с «Cannot read properties of null».
  */
 
 import { intersectRect, unionRect } from '../utils/math.js';
 import { createLayerCanvas } from '../core/layer.js';
 
 export function moveTool(app) {
-  /** Состояние перетаскивания (в замыкании, а не в this) */
+  /** Состояние перетаскивания (живёт только пока тянут мышью) */
   const S = {
     dragging: false,
     origin: null,
@@ -57,33 +59,45 @@ export function moveTool(app) {
   };
 
   /** Область, которую нужно очистить перед отрисовкой снимка со смещением */
-  const computeAffected = () => {
+  const computeAffected = (op) => {
     const l = app.doc.activeLayer;
+    if (!l || !op.sourceRect) return null;
     const target = {
-      x: S.sourceRect.x + S.dx,
-      y: S.sourceRect.y + S.dy,
-      w: S.sourceRect.w,
-      h: S.sourceRect.h,
+      x: op.sourceRect.x + op.dx, y: op.sourceRect.y + op.dy,
+      w: op.sourceRect.w, h: op.sourceRect.h,
     };
-    return intersectRect(S.duplicate ? unionRect(S.sourceRect, target) : S.sourceRect, l.bounds);
+    return intersectRect(
+      op.duplicate ? unionRect(op.sourceRect, target) : op.sourceRect,
+      l.bounds,
+    );
   };
 
-  /** Очищает затронутую область и рисует снимок со смещением (ox, oy) */
-  const blit = (ox, oy) => {
+  /**
+   * Очищает затронутую область и рисует снимок со смещением (ox, oy).
+   * @param {object} op неизменяемый снимок операции
+   */
+  const blit = (op, ox, oy) => {
     const l = app.doc.activeLayer;
-    if (!l || !S.snapshot) return;
-    const tmp = ensureScratch(S.sourceRect.w, S.sourceRect.h);
-    tmp.getContext('2d').putImageData(S.snapshot, 0, 0);
+    if (!l || !op.snapshot) return;
+    const affected = computeAffected(op);
+    if (!affected) return;
+    op.affected = affected;
+
+    const tmp = ensureScratch(op.sourceRect.w, op.sourceRect.h);
+    tmp.getContext('2d').putImageData(op.snapshot, 0, 0);
 
     const ctx = l.ctx;
     ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.clearRect(S.affected.x, S.affected.y, S.affected.w, S.affected.h);
-    ctx.drawImage(tmp, S.sourceRect.x + ox, S.sourceRect.y + oy);
-    ctx.restore();
+    try {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.clearRect(affected.x, affected.y, affected.w, affected.h);
+      ctx.drawImage(tmp, op.sourceRect.x + ox, op.sourceRect.y + oy);
+    } finally {
+      ctx.restore();
+    }
 
-    l.markDirty(S.affected);
-    app.renderer.addDirty(S.affected);
+    l.markDirty(affected);
+    app.renderer.addDirty(affected);
   };
 
   const tool = {
@@ -116,50 +130,48 @@ export function moveTool(app) {
       if (!S.moved && Math.hypot(S.dx, S.dy) < 1) return;
 
       if (!S.snapshot && !prepare()) { reset(); return; }
-      if (!S.affected) S.affected = computeAffected();
-
       S.moved = true;
-      blit(S.dx, S.dy);
+
+      // Во время перетаскивания состояние живёт в S
+      blit({ sourceRect: S.sourceRect, snapshot: S.snapshot, dx: S.dx, dy: S.dy, duplicate: S.duplicate },
+        S.dx, S.dy);
     },
 
     onPointerUp() {
       if (!S.dragging) return;
       if (!S.moved || !S.snapshot) { reset(); return; }
 
+      // Замораживаем операцию: история больше не зависит от S
+      const op = {
+        sourceRect: { ...S.sourceRect },
+        snapshot: S.snapshot,
+        dx: S.dx,
+        dy: S.dy,
+        duplicate: S.duplicate,
+        affected: null,
+      };
       const selBefore = app.selection.rect ? { ...app.selection.rect } : null;
       const selAfter = selBefore
-        ? { ...selBefore, x: selBefore.x + S.dx, y: selBefore.y + S.dy }
+        ? { ...selBefore, x: selBefore.x + op.dx, y: selBefore.y + op.dy }
         : null;
-      const { dx, dy } = S;
+
+      const apply = (ox, oy, sel) => {
+        blit(op, ox, oy);
+        if (tool.settings.moveSelection && sel && app.selection.active) {
+          app.selection.rect = { ...sel };
+          app.selection.emit('change');
+        }
+      };
 
       const command = {
         type: 'callback',
         label: 'Перемещение',
-        bytes: 0,
-        do() {
-          S.dx = dx; S.dy = dy;
-          S.affected = computeAffected();
-          blit(dx, dy);
-          if (tool.settings.moveSelection && selAfter) {
-            app.selection.rect = { ...selAfter };
-            app.selection.emit('change');
-          }
-        },
-        undo() {
-          S.dx = dx; S.dy = dy;
-          S.affected = computeAffected();
-          blit(0, 0);
-          if (tool.settings.moveSelection && selBefore) {
-            app.selection.rect = { ...selBefore };
-            app.selection.emit('change');
-          }
-        },
+        bytes: op.sourceRect.w * op.sourceRect.h * 4,
+        do: () => apply(op.dx, op.dy, selAfter),
+        undo: () => apply(0, 0, selBefore),
       };
 
-      // Команда выполняется один раз (do), но она идемпотентна:
-      // перед отрисовкой всегда очищается затронутая область
-      command.do();
-      app.history.push(command);
+      app.history.execute(command);
       app.markChanged();
       reset();
     },

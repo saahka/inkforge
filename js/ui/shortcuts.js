@@ -81,7 +81,7 @@ export function buildShortcutTable(app) {
     // ─── Выделение ───
     { key: 'ctrl+a', label: 'Ctrl+A', run: () => app.selection.selectAll() },
     { key: 'ctrl+d', label: 'Ctrl+D', run: () => app.selection.clear() },
-    { key: 'ctrl+shift+i', label: '⇧Ctrl+I', run: () => app.selection.invert?.() },
+    { key: 'ctrl+shift+i', label: '⇧Ctrl+I', run: () => app.selection.invert() },
 
     // ─── Слои ───
     { key: 'ctrl+shift+n', label: 'Ctrl+⇧N', run: () => app.layers.addLayer({ record: true }) },
@@ -119,14 +119,10 @@ export function buildShortcutTable(app) {
   ];
 }
 
-/** Нормализация сочетания в строку вида "ctrl+shift+s" */
+/** Нормализация одиночной клавиши: учитывает Shift для пунктуации ([ → {, ? → /) */
 function comboOf(e) {
-  const parts = [];
-  if (e.ctrlKey || e.metaKey) parts.push('ctrl');
-  if (e.altKey) parts.push('alt');
-  if (e.shiftKey) parts.push('shift');
-  parts.push(e.key.toLowerCase());
-  return parts.join('+');
+  const mods = `${e.ctrlKey || e.metaKey ? 'ctrl+' : ''}${e.altKey ? 'alt+' : ''}${e.shiftKey ? 'shift+' : ''}`;
+  return mods + e.key.toLowerCase();
 }
 
 const EDITABLE = /^(input|textarea|select)$/i;
@@ -139,21 +135,33 @@ export function installShortcuts(app) {
     map.get(item.key).push(item);
   }
 
+  /**
+   * Клавиши всегда ищем по двум формам: «как напечатано» и по e.code.
+   * Вторая нужна для русской раскладки: физическая клавиша B шлёт key «ь»,
+   * а e.code остаётся «KeyB». Префикс «ctrl+» различает сочетания
+   * с Ctrl и без него, чтобы Shift+[ (жёсткость) не путался с Ctrl+Shift+].
+   */
   const onKeyDown = (e) => {
     const target = e.target;
-    // Не перехватываем ввод в полях и contenteditable
     if (EDITABLE.test(target.tagName) || target.isContentEditable) {
       if (e.key === 'Escape') target.blur();
       return;
     }
-    // Буквенные сочетания работают и в русской раскладке (по e.code)
-    let combo = comboOf(e);
-    if (!map.has(combo)) {
-      const codeCombo = `${e.ctrlKey || e.metaKey ? 'ctrl+' : ''}${e.shiftKey ? 'shift+' : ''}${e.code.replace(/^Key|^Digit/, '').toLowerCase()}`;
-      combo = map.has(codeCombo) ? codeCombo : combo;
+
+    const mods = `${e.ctrlKey || e.metaKey ? 'ctrl+' : ''}${e.altKey ? 'alt+' : ''}${e.shiftKey ? 'shift+' : ''}`;
+    const byKey = e.key.toLowerCase();
+    const byCode = e.code.replace(/^Key|^Digit/, '').toLowerCase();
+
+    const candidates = [];
+    for (const base of [...new Set([byKey, byCode])]) {
+      // Пунктуация с Shift: Shift+/? приходит как key '?' и уже с shift
+      if (e.shiftKey && /^[a-z0-9/?]$/.test(base) && !e.ctrlKey && !e.metaKey) {
+        candidates.push(base);
+      }
+      candidates.push(`${mods}${base}`);
     }
 
-    const items = map.get(combo);
+    const items = candidates.map((c) => map.get(c)).find(Boolean);
     if (!items) return;
     e.preventDefault();
     for (const item of items) {

@@ -50,7 +50,8 @@ export function fillTool(app) {
       const count = maskCount(mask);
       if (count === 0) return;
 
-      const color = contiguous ? app.color.fg : app.color.bg;
+      // Shift — заливка фоновым цветом (как в Photoshop)
+      const color = c.shift ? app.color.bg : app.color.fg;
       const patch = maskToImageData(mask, region.w, region.h, color);
 
       // Рисуем через временный canvas, чтобы работали клип и режим наложения
@@ -60,13 +61,16 @@ export function fillTool(app) {
       const cmd = new PixelCommand(layer, region, 'Заливка');
       const ctx = layer.ctx;
       ctx.save();
-      if (app.selection.active) app.selection.clipContext(ctx);
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.drawImage(tmp, region.x, region.y);
-      ctx.restore();
+      try {
+        if (app.selection.active) app.selection.clipContext(ctx);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(tmp, region.x, region.y);
+      } finally {
+        ctx.restore();
+      }
       layer.markDirty(region);
 
-      app.history.execute(cmd);
+      app.history.execute(cmd.capture());
       app.renderer.addDirty(region);
       app.markChanged();
     },

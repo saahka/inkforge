@@ -72,15 +72,16 @@ export function floodFillMask(imageData, w, h, sx, sy, tolerance = 32, opts = {}
       if (ny < 0 || ny >= h) continue;
       let i = left;
       while (i <= right) {
+        // idx обязан пересчитываться на каждом шаге, иначе проверяется устаревший пиксель
         const idx = ny * w + i;
         if (!mask[idx] && matches(data, idx * 4, tr, tg, tb, tolerance)
           && (!alphaSensitive || Math.abs(data[idx * 4 + 3] - ta) <= tolerance)) {
           stack.push(i, ny);
           // Пропускаем весь непрерывный участок — точки в стек не нужны
-          while (i <= right
-            && !mask[idx]
-            && matches(data, idx * 4, tr, tg, tb, tolerance)
-            && (!alphaSensitive || Math.abs(data[idx * 4 + 3] - ta) <= tolerance)) {
+          while (i <= right) {
+            const k = ny * w + i;
+            if (mask[k] || !matches(data, k * 4, tr, tg, tb, tolerance)
+              || (alphaSensitive && Math.abs(data[k * 4 + 3] - ta) > tolerance)) break;
             i++;
           }
         } else {

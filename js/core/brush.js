@@ -62,6 +62,8 @@ export function makeBrush(props = {}) {
     tiltDynamics: clamp(props.tiltDynamics ?? 0, 0, 1),
     /** Случайный разброс размера (для зерна) */
     jitter: clamp(props.jitter ?? base.jitter, 0, 1),
+    /** Сид зерна: у каждой кисти свой, иначе все «карандаши» зернятся одинаково */
+    seed: props.seed ?? (Math.floor(Math.random() * 1e9) + 1),
     /** Угол кисти в градусах (для каллиграфии/текстуры) */
     angle: props.angle ?? 0,
     /** Отношение меньшей стороны к большей (эллипс) */
@@ -161,7 +163,8 @@ function getStamp(brush) {
 /** Зернистый штамп (карандаш/акварель) — набор полупрозрачных точек */
 function drawGrainStamp(ctx, cx, cy, r, brush, color, meta) {
   const rnd = mulberry32((brush.seed || 1) >>> 0);
-  const density = meta.type === 'watercolor' ? 26 : 90;
+  // У акварели зерно крупнее и реже, у карандаша — мелкое и частое
+  const density = brush.type === 'watercolor' ? 26 : 90;
   const maxR = Math.max(1, Math.floor(r));
   const base = Math.max(0.05, 0.5 * (1 - brush.hardness * 0.5));
 
@@ -229,21 +232,26 @@ export function stampDab(ctx, brush, x, y, o = {}) {
 export function dynamicSize(brush, { pressure = 1, tilt = 0 } = {}) {
   let s = brush.size;
   if (brush.sizeDynamics > 0) {
-    const p = clamp(pressure, 0.02, 1);
+    const p = Number.isFinite(pressure) ? clamp(pressure, 0.02, 1) : 1;
     s *= 1 - brush.sizeDynamics * (1 - p ** 0.7);
   }
   if (brush.tiltDynamics > 0) {
-    s *= 1 + brush.tiltDynamics * 0.9 * clamp(tilt, 0, 1);
+    const t = Number.isFinite(tilt) ? clamp(tilt, 0, 1) : 0;
+    s *= 1 + brush.tiltDynamics * 0.9 * t;
   }
-  return Math.max(0.5, s);
+  return Math.max(0.5, Number.isFinite(s) ? s : brush.size);
 }
 
-/** Прозрачность dab с учётом flow, динамики давления и накопления */
-export function dynamicAlpha(brush, { pressure = 1, pressureFactor = 1 } = {}) {
+/**
+ * Прозрачность dab с учётом flow, динамики давления и накопления.
+ * @param {object} brush
+ * @param {object} p точка штриха: { pressure }
+ */
+export function dynamicAlpha(brush, p = {}) {
+  const pressure = Number.isFinite(p.pressure) ? clamp(p.pressure, 0.02, 1) : 1;
   let a = brush.flow * brush.opacity;
   if (brush.opacityDynamics > 0) {
-    const p = clamp(pressureFactor, 0.02, 1);
-    a *= 1 - brush.opacityDynamics * (1 - p);
+    a *= 1 - brush.opacityDynamics * (1 - pressure);
   }
   return clamp(a, 0, 1);
 }

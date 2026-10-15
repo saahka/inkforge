@@ -34,10 +34,11 @@ export const rectFromPoints = (x1, y1, x2, y2) => ({
 });
 
 /** Нормализует «перевёрнутые» прямоугольники (w/h < 0) */
-export const normalizeRect = (r) =>
-  r.w < 0 ? { x: r.x + r.w, y: r.y, w: -r.w, h: r.h }
-  : r.h < 0 ? { x: r.x, y: r.y + r.h, w: r.w, h: -r.h }
-  : r;
+export const normalizeRect = (r) => {
+  const x = r.w < 0 ? r.x + r.w : r.x;
+  const y = r.h < 0 ? r.y + r.h : r.y;
+  return { x, y, w: Math.abs(r.w), h: Math.abs(r.h) };
+};
 
 export const rectsIntersect = (a, b) =>
   a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;

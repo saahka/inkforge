@@ -63,16 +63,19 @@ export function gradientTool(app) {
       const cmd = new PixelCommand(layer, region, 'Градиент');
       const ctx = layer.ctx;
       ctx.save();
-      if (app.selection.active) app.selection.clipContext(ctx);
-      ctx.beginPath();
-      ctx.rect(region.x, region.y, region.w, region.h);
-      ctx.clip();
-      ctx.fillStyle = buildGradient(ctx, s.x, s.y, e.x, e.y, radial);
-      ctx.fillRect(region.x, region.y, region.w, region.h);
-      ctx.restore();
+      try {
+        if (app.selection.active) app.selection.clipContext(ctx);
+        ctx.beginPath();
+        ctx.rect(region.x, region.y, region.w, region.h);
+        ctx.clip();
+        ctx.fillStyle = buildGradient(ctx, s.x, s.y, e.x, e.y, radial);
+        ctx.fillRect(region.x, region.y, region.w, region.h);
+      } finally {
+        ctx.restore();
+      }
       layer.markDirty(region);
 
-      app.history.execute(cmd);
+      app.history.execute(cmd.capture());
       app.renderer.addDirty(region);
       app.markChanged();
       start = end = null;

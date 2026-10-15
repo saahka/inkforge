@@ -9,14 +9,15 @@ import { createDocument } from './doc.js';
 import { Viewport } from './viewport.js';
 import { Renderer } from './renderer.js';
 import { History, PixelCommand } from './history.js';
+import { Layer, createLayerCanvas } from './layer.js';
 import { LayerManager } from './layer-manager.js';
 import { Selection } from './selection.js';
 import { StrokeEngine, createStrokeBufferStore } from './stroke-engine.js';
 import { makeBrush, setDefaultBrushColor, cloneBrush, PRESETS } from './brush.js';
 import { config } from './config.js';
 import { intersectRect, clamp } from '../utils/math.js';
+import { rgbToHex, parseColor, pushRecent, loadRecent } from '../utils/color.js';
 import { debounce } from '../utils/dom.js';
-import { rgbToHex, parseColor } from '../utils/color.js';
 import { brushTool } from '../tools/brush-tool.js';
 import { eraserTool } from '../tools/eraser-tool.js';
 import { fillTool } from '../tools/fill-tool.js';
@@ -54,10 +55,13 @@ export class App extends Emitter {
     this.dirtySinceSave = false;
     this.projectId = null;
     this.saving = false;
+    /** Цвет под курсором для пипетки (кэш — не читаем пиксели каждый кадр) */
+    this.hoverColor = null;
+    /** Кэш «недавних» цветов для панели */
+    this.recentColors = loadRecent();
 
     this._raf = 0;
     this._lastFrame = performance.now();
-    this._unsaved = new Set();
 
     this.autosave = debounce(() => this.emit('autosave'), config.AUTOSAVE_DEBOUNCE);
   }
@@ -92,14 +96,10 @@ export class App extends Emitter {
     // Изменение вида → полная перерисовка
     this.viewport.on('change', () => this.renderer.invalidate());
 
-    // Структурные изменения слоёв
-    this.layers.on('change', ({ structural }) => {
-      this.renderer.invalidate();
-      if (structural) this.layers.invalidateAllThumbs();
-      this.markChanged();
-    });
-
-    this.selection.on('change', () => this.emit('selection'));
+    // Стек слоёв и выделение пересоздаются при смене документа,
+    // поэтому внешний код подписывается на события App, а не на сами объекты
+    this.#subscribeLayers(this.layers);
+    this.#subscribeSelection(this.selection);
 
     this.history.on('change', (state) => {
       this.renderer.invalidate();
@@ -115,7 +115,22 @@ export class App extends Emitter {
     this.#bindDoc(this.doc);
   }
 
-  /** Подписка на события конкретного документа (нужна и после setDocument) */
+  /** Подписка App на конкретный менеджер слоёв (он пересоздаётся) */
+  #subscribeLayers(manager) {
+    manager.on('change', ({ structural, layer } = {}) => {
+      this.renderer.invalidate();
+      if (structural) manager.invalidateAllThumbs();
+      this.emit('layers', { structural, layer });
+      this.markChanged();
+    });
+  }
+
+  /** Подписка App на конкретный объект выделения (он пересоздаётся) */
+  #subscribeSelection(selection) {
+    selection.on('change', () => this.emit('selection'));
+  }
+
+  /** Подписка на события документа (он пересоздаётся при открытии файла) */
   #bindDoc(doc) {
     doc.on('resize', () => {
       this.renderer.invalidate();
@@ -137,8 +152,8 @@ export class App extends Emitter {
 
   destroy() {
     cancelAnimationFrame(this._raf);
-    this.renderer.off();
-    this.viewport.off();
+    this.renderer.clear();
+    this.viewport.clear();
   }
 
   /* ─── Документ ──────────────────────────────────────────────── */
@@ -149,18 +164,18 @@ export class App extends Emitter {
     this.doc = doc;
     this.projectId = null;
     this.history.clear();
+
     this.layers = new LayerManager(doc, this.history);
-    this.layers.on('change', ({ structural }) => {
-      this.renderer.invalidate();
-      if (structural) this.layers.invalidateAllThumbs();
-      this.markChanged();
-    });
+    this.#subscribeLayers(this.layers);
     this.selection = new Selection(doc);
-    this.selection.on('change', () => this.emit('selection'));
+    this.#subscribeSelection(this.selection);
     this.#bindDoc(doc);
+
     if (!keepView) this.viewport.fit(doc.width, doc.height);
     this.renderer.invalidate();
     this.emit('doc');
+    this.emit('layers', { structural: true });
+    this.emit('selection');
   }
 
   resizeDocument(width, height, anchor = 'center') {
@@ -222,6 +237,9 @@ export class App extends Emitter {
     if (which === 'fg') {
       this.brush.color = { ...rgb };
       setDefaultBrushColor(rgb);
+      this._recent = pushRecent(rgbToHex(rgb));
+      this.recentColors = this._recent;
+      this.emit('recent', this._recent);
     }
     this.emit('color');
   }
@@ -247,6 +265,8 @@ export class App extends Emitter {
     const layer = this.doc.activeLayer;
     if (!layer) return false;
     if (layer.locked && tool === 'brush') return false;
+    // Страховка от «залипшего» предыдущего штриха (он держит ctx.save())
+    if (this.stroke.active) this.cancelStroke();
     const brush = tool === 'eraser' ? this.eraserBrush : this.brush;
 
     this.stroke.begin({
@@ -274,7 +294,7 @@ export class App extends Emitter {
     if (!this.stroke.active) return null;
     const result = this.stroke.finish();
     this.renderer.liveStroke = null;
-    if (!result) { this.renderer.invalidate(); return null; }
+    if (!result?.dirty) { this.renderer.invalidate(); return null; }
 
     const layer = this.doc.activeLayer;
     if (!layer) return null;
@@ -295,12 +315,26 @@ export class App extends Emitter {
 
     const cmd = new PixelCommand(layer, rect, label);
 
+    // Произвольная форма выделения обрезается альфа-маской, прямоугольная — clip'ом.
+    // ВАЖНО: applyMask() возвращает патч РАЗМЕРОМ rect (начало координат — 0,0),
+    // а буфер штриха — размером с документ. Поэтому координаты источника
+    // в drawImage разные: у патча 0, у буфера — как у документа.
+    const masked = !!this.selection.mask;
+    const source = masked
+      ? this.selection.applyMask(result.buffer.canvas, rect)
+      : result.buffer.canvas;
+    const srcX = masked ? 0 : rect.x;
+    const srcY = masked ? 0 : rect.y;
+
     const ctx = layer.ctx;
     ctx.save();
-    if (this.selection.active) this.selection.clipContext(ctx);
-    ctx.globalCompositeOperation = result.composite;
-    ctx.drawImage(result.buffer.canvas, rect.x, rect.y, rect.w, rect.h, rect.x, rect.y, rect.w, rect.h);
-    ctx.restore();
+    try {
+      if (this.selection.active && !masked) this.selection.clipContext(ctx);
+      ctx.globalCompositeOperation = result.composite;
+      ctx.drawImage(source, srcX, srcY, rect.w, rect.h, rect.x, rect.y, rect.w, rect.h);
+    } finally {
+      ctx.restore();
+    }
     layer.markDirty(rect);
 
     // capture() снимает состояние «после» — без него повтор не сработает
@@ -321,6 +355,7 @@ export class App extends Emitter {
 
   markChanged() {
     this.dirtySinceSave = true;
+    this.invalidateSampler();
     document.getElementById('app')?.classList.add('is-dirty');
     this.emit('changed');
     this.autosave();
@@ -332,14 +367,55 @@ export class App extends Emitter {
     this.emit('saved');
   }
 
-  /** Пиксель итогового изображения под точкой (для пипетки) */
+  /**
+   * Пиксель итогового изображения под точкой (для пипетки).
+   *
+   * Экранный canvas не годится: он непрозрачный (залит фоном и «шахматкой»),
+   * поэтому альфы в нём нет. Держим отдельный «сэмплер» того же размера,
+   * что и документ: он перерисовывается только когда композит изменился,
+   * а читать из него — O(1).
+   */
   sampleComposite(wx, wy) {
-    const vp = this.viewport;
-    const x = Math.floor((wx * vp.scale + vp.x) * this.renderer.dpr);
-    const y = Math.floor((wy * vp.scale + vp.y) * this.renderer.dpr);
-    if (x < 0 || y < 0 || x >= this.renderer.view.width || y >= this.renderer.view.height) return null;
-    const d = this.renderer.vctx.getImageData(x, y, 1, 1).data;
+    const doc = this.doc;
+    const x = Math.floor(wx);
+    const y = Math.floor(wy);
+    if (x < 0 || y < 0 || x >= doc.width || y >= doc.height) return null;
+
+    const s = this.#sampler(doc);
+    if (!s) return null;
+    if (this._samplerDirty) {
+      s.clearRect(0, 0, doc.width, doc.height);
+      for (const layer of doc.layers) {
+        if (!layer.visible || layer.opacity <= 0) continue;
+        s.save();
+        try {
+          s.globalAlpha = layer.opacity;
+          s.globalCompositeOperation = layer.blendMode;
+          s.drawImage(layer.canvas, 0, 0);
+        } finally {
+          s.restore();
+        }
+      }
+      this._samplerDirty = false;
+    }
+
+    const d = s.getImageData(x, y, 1, 1).data;
     return { r: d[0], g: d[1], b: d[2], a: d[3] / 255 };
+  }
+
+  /** Контекст «сэмплера» того же размера, что и документ */
+  #sampler(doc) {
+    if (!this._sampler || this._sampler.width !== doc.width || this._sampler.height !== doc.height) {
+      this._sampler = createLayerCanvas(doc.width, doc.height);
+      this._samplerCtx = this._sampler.getContext('2d', { willReadFrequently: true });
+      this._samplerDirty = true;
+    }
+    return this._samplerCtx;
+  }
+
+  /** Пометить композит изменившимся (вызывается после любой правки) */
+  invalidateSampler() {
+    this._samplerDirty = true;
   }
 
   /** Экспорт итогового изображения в canvas (для сохранения/экспорта) */

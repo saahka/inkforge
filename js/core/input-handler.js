@@ -10,6 +10,7 @@
  */
 
 import { setShiftHeld } from '../tools/marquee-tool.js';
+import { clamp } from '../utils/math.js';
 
 export class InputHandler {
   constructor(app) {
@@ -141,6 +142,12 @@ export class InputHandler {
     const s = this.#screen(e);
     const w = this.#world(e);
     app.renderer.cursor = { x: w.x, y: w.y };
+    // Давление пера нужно кольцу курсора: при включённой динамике
+    // оно показывает «текущий» размер кисти, а не максимальный
+    app.renderer.cursorPressure = e.pointerType === 'mouse'
+      ? 1
+      : clamp(e.pressure || 0, 0, 1);
+    app.renderer.cursorTilt = clamp(Math.hypot(e.tiltX || 0, e.tiltY || 0) / 90, 0, 1);
     app.emit('cursor', { world: w, screen: s, pointerType: e.pointerType, pressure: e.pressure });
 
     if (this.panning) {
@@ -217,6 +224,7 @@ export class InputHandler {
   #startPan(e, s) {
     this.panning = true;
     this._panLast = { x: e.clientX, y: e.clientY };
+    this._panPointer = e.pointerId;
     this.app.stage.dataset.cursor = 'grabbing';
     try { this.app.stage.setPointerCapture(e.pointerId); } catch { /* игнор */ }
   }
@@ -224,6 +232,11 @@ export class InputHandler {
   #endPan() {
     this.panning = false;
     this._panLast = null;
+    // Освобождаем захват пера: иначе события продолжают идти в холст
+    if (this._panPointer !== null && this._panPointer !== undefined) {
+      try { this.app.stage.releasePointerCapture(this._panPointer); } catch { /* нечего отпускать */ }
+      this._panPointer = null;
+    }
     this.app.stage.dataset.cursor = this.app.tool.cursor || 'crosshair';
   }
 

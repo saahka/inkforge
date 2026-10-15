@@ -48,6 +48,9 @@ export class Renderer extends Emitter {
     this.liveStroke = null;
     /** Позиция курсора в мировых координатах */
     this.cursor = null;
+    /** Давление и наклон пера в текущей точке (для кольца курсора) */
+    this.cursorPressure = 1;
+    this.cursorTilt = 0;
     /** Текущий инструмент для отрисовки кольца кисти */
     this.cursorRadius = 0;
 

@@ -133,20 +133,30 @@ export class LayerManager extends Emitter {
     return this.addLayer({ name: `${layer.name} копия`, copy: layer, aboveId: id, record });
   }
 
-  /** Перемещение слоя в стеке: delta > 0 — вверх по экрану (к началу массива) */
+  /**
+   * Поднимает (delta > 0) или опускает (delta < 0) слой в стеке.
+   * Массив layers упорядочен снизу вверх: layers[0] — нижний слой,
+   * последний элемент — верхний. «Поднять» = увеличить индекс.
+   */
   moveLayer(id, delta, { record = true } = {}) {
     const doc = this.doc;
     const from = doc.indexOf(id);
-    const to = from + (delta > 0 ? -Math.abs(delta) : Math.abs(delta));
-    if (from < 0 || to < 0 || to >= doc.layers.length) return false;
-    if (from === to) return false;
-    const fn = () => {
+    if (from < 0 || !delta) return false;
+    const to = from + Math.sign(delta);
+    if (to < 0 || to >= doc.layers.length || from === to) return false;
+    const run = () => {
       const [l] = doc.layers.splice(from, 1);
       doc.layers.splice(to, 0, l);
       this.emit('change', { structural: true });
       doc.touch();
     };
-    if (record) this.structural('Порядок слоёв', fn); else fn();
+    const before = this.snapshot();
+    run();
+    const after = this.snapshot();
+    if (record) {
+      this.history.execute(new CallbackCommand('Порядок слоёв',
+        () => this.restore(after), () => this.restore(before)));
+    }
     return true;
   }
 
@@ -205,6 +215,7 @@ export class LayerManager extends Emitter {
 
   /** Очищает слой, записывая изменение в историю (использует PixelCommand) */
   clearLayer(layer, { record = true } = {}) {
+    if (!layer) return;
     const rect = { x: 0, y: 0, w: this.doc.width, h: this.doc.height };
     if (!record) {
       layer.clear();
@@ -214,14 +225,19 @@ export class LayerManager extends Emitter {
     }
     const cmd = new PixelCommand(layer, rect, 'Очистить слой');
     layer.clear();
-    this.history.execute(cmd);
+    // capture() обязателен: без него «повтор» не восстановит пиксели
+    this.history.execute(cmd.capture());
     this.emit('change', { structural: false, layer });
     this.doc.touch();
   }
 
   /* ─── Слияние ───────────────────────────────────────────────── */
 
-  /** Объединить слой со слоем под ним */
+  /**
+   * Объединить слой со слоем под ним.
+   * Операция отменяема целиком: сохраняем пиксели нижнего слоя «до»
+   * и снимок стека, поэтому Ctrl+Z возвращает и картинку, и порядок слоёв.
+   */
   mergeDown(id, { record = true } = {}) {
     const doc = this.doc;
     const idx = doc.indexOf(id);
@@ -233,32 +249,46 @@ export class LayerManager extends Emitter {
     const run = () => {
       const ctx = bottom.ctx;
       ctx.save();
-      ctx.globalAlpha = top.opacity;
-      ctx.globalCompositeOperation = top.blendMode in NATIVE ? top.blendMode : 'source-over';
-      ctx.drawImage(top.canvas, 0, 0);
-      ctx.restore();
+      try {
+        ctx.globalAlpha = top.opacity;
+        ctx.globalCompositeOperation = NATIVE.has(top.blendMode) ? top.blendMode : 'source-over';
+        ctx.drawImage(top.canvas, 0, 0);
+      } finally {
+        ctx.restore();
+      }
       bottom.markDirty();
       this.thumbs.delete(bottom.id);
     };
 
     const remove = () => {
-      doc.layers.splice(doc.indexOf(top.id), 1);
+      const i = doc.indexOf(top.id);
+      if (i >= 0) doc.layers.splice(i, 1);
       for (const l of doc.layers) if (l.clipTo === top.id) l.clipTo = bottom.id;
       if (doc.activeLayerId === top.id) doc.activeLayerId = bottom.id;
       this.thumbs.delete(top.id);
     };
 
-    if (record) {
-      const before = this.snapshot();
+    if (!record) {
       run();
       remove();
-      const after = this.snapshot();
-      this.history.execute(new CallbackCommand('Объединить вниз',
-        () => this.restore(after), () => this.restore(before)));
-    } else {
-      run();
-      remove();
+      this.emit('change', { structural: true });
+      doc.touch();
+      return true;
     }
+
+    const rect = { x: 0, y: 0, w: doc.width, h: doc.height };
+    const pixels = new PixelCommand(bottom, rect, 'Объединить вниз');
+    const beforeStack = this.snapshot();
+
+    run();
+    remove();
+    pixels.capture();
+    const afterStack = this.snapshot();
+
+    this.history.execute(new CallbackCommand('Объединить вниз',
+      () => { pixels.do(); this.restore(afterStack); },
+      () => { pixels.undo(); this.restore(beforeStack); }));
+
     this.emit('change', { structural: true });
     doc.touch();
     return true;
@@ -270,35 +300,53 @@ export class LayerManager extends Emitter {
     const visible = doc.layers.filter((l) => l.visible);
     if (visible.length < 1) return false;
 
-    const run = () => {
-      const merged = new Layer(doc.width, doc.height, { name: 'Фон' });
-      const mctx = merged.ctx;
-      if (doc.background && doc.background !== 'transparent') {
-        mctx.fillStyle = doc.background;
-        mctx.fillRect(0, 0, doc.width, doc.height);
-      }
-      for (const l of visible) {
-        mctx.save();
+    // Снимок всех слоёв до слияния — иначе отмена превратилась бы в «сброс»
+    const previous = visible.map((l) => ({
+      ref: l,
+      meta: l.serialize(),
+      data: l.ctx.getImageData(0, 0, doc.width, doc.height),
+    }));
+
+    const merged = new Layer(doc.width, doc.height, { name: 'Фон' });
+    const mctx = merged.ctx;
+    if (doc.background && doc.background !== 'transparent') {
+      mctx.fillStyle = doc.background;
+      mctx.fillRect(0, 0, doc.width, doc.height);
+    }
+    for (const l of visible) {
+      mctx.save();
+      try {
         mctx.globalAlpha = l.opacity;
-        mctx.globalCompositeOperation = l.blendMode in NATIVE ? l.blendMode : 'source-over';
+        mctx.globalCompositeOperation = NATIVE.has(l.blendMode) ? l.blendMode : 'source-over';
         mctx.drawImage(l.canvas, 0, 0);
+      } finally {
         mctx.restore();
       }
+    }
+    merged.markDirty();
+
+    const build = () => {
       doc.layers = [merged];
       doc.activeLayerId = merged.id;
-      merged.markDirty();
-      return merged;
+    };
+    const revert = () => {
+      for (const p of previous) {
+        p.ref.applyMeta(p.meta);
+        p.ref.ctx.putImageData(p.data, 0, 0);
+        p.ref.markDirty();
+      }
+      doc.layers = previous.map((p) => p.ref);
+      doc.activeLayerId = previous.at(-1)?.id ?? null;
+      this.thumbs.delete(merged.id);
     };
 
     if (record) {
-      const before = this.snapshot();
-      run();
-      const after = this.snapshot();
-      this.history.execute(new CallbackCommand('Сплющить',
-        () => this.restore(after), () => this.restore(before)));
+      build();
+      this.history.execute(new CallbackCommand('Сплющить', build, revert));
     } else {
-      run();
+      build();
     }
+    this.thumbs.delete(merged.id);
     this.emit('change', { structural: true });
     doc.touch();
     return true;
@@ -323,7 +371,11 @@ export class LayerManager extends Emitter {
   }
 }
 
-// Список режимов, поддерживаемых Canvas2D без ручного смешивания
+/**
+ * Режимы наложения, которые Canvas2D понимает сам.
+ * ВАЖНО: проверять через NATIVE.has(mode), а не `mode in NATIVE`:
+ * оператор `in` на Set смотрит свойства объекта, а не его значения.
+ */
 const NATIVE = new Set([
   'source-over', 'multiply', 'screen', 'overlay', 'darken', 'lighten',
   'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion',

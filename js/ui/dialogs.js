@@ -9,7 +9,7 @@ import { createDocument } from '../core/doc.js';
 import { projectStore } from '../storage/project-store.js';
 import {
   exportImage, saveBlobAs, openFile, serializeProject,
-  openAny, imageToLayer, supportsFsAccess, FILE_FORMAT,
+  openAny, imageToLayer, imageToDocument, supportsFsAccess, FILE_FORMAT,
 } from '../utils/file.js';
 import { notify } from './notify.js';
 
@@ -21,6 +21,11 @@ const PRESET_SIZES = [
   { label: 'Full HD', w: 1920, h: 1080 },
   { label: '4K', w: 3840, h: 2160 },
 ];
+
+/** Обновляет поле имени документа в шапке */
+const syncDocName = (app, name) => {
+  if (app.docNameInput) app.docNameInput.value = name;
+};
 
 /* ─── Базовый модальный каркас ────────────────────────────────────── */
 
@@ -35,12 +40,17 @@ export function modal({ title, body, buttons = [], onClose }) {
       el('button.icon-btn', { text: '✕', type: 'button', onclick: () => closeModal() }),
     ]),
     el('div.modal__body', null, [].concat(body)),
-    el('div.modal__foot', null, buttons.map((b) => el('button.btn', {
-      type: 'button',
-      text: b.label,
-      class: b.primary ? 'btn--primary' : (b.danger ? 'btn--danger' : ''),
-      onclick: () => b.action?.(closeModal),
-    }))),
+    el('div.modal__foot', null, buttons.map((b) => {
+      // Модификатор дописываем к базовому классу, а не заменяем его
+      const btn = el('button', {
+        type: 'button',
+        text: b.label,
+        onclick: () => b.action?.(closeModal),
+      });
+      btn.className = ['btn', b.primary ? 'btn--primary' : '', b.danger ? 'btn--danger' : '']
+        .filter(Boolean).join(' ');
+      return btn;
+    })),
   ]);
 
   host.replaceChildren(node);
@@ -123,8 +133,6 @@ export function openDialogNew(app) {
       background: transparent.checked ? 'transparent' : bg.value,
     });
     app.setDocument(doc);
-    app.projectId = null;
-    app.docTitle?.dispatchEvent?.(new Event('input'));
     close();
     notify('Создан новый документ', 'ok');
   };
@@ -232,7 +240,7 @@ export async function openDialogGallery(app) {
           if (project.color) app.setColor(project.color.fg || app.color.fg, 'fg');
           if (project.color) app.setColor(project.color.bg || app.color.bg, 'bg');
           if (project.brush) app.setBrush({ ...app.brush, ...project.brush });
-          app.docNameInput && (app.docNameInput.value = doc.name);
+          syncDocName(app, doc.name);
           app.markSaved();
           notify(`Открыт проект «${doc.name}»`, 'ok');
         } catch (err) {
@@ -306,7 +314,7 @@ export async function openDialogOpenProject(app) {
       if (result.viewport) app.viewport.restore(result.viewport);
       if (result.brush) app.setBrush({ ...app.brush, ...result.brush });
       app.projectId = null;
-      app.docNameInput && (app.docNameInput.value = result.doc.name);
+      syncDocName(app, result.doc.name);
       app.markSaved();
       notify(`Открыт проект «${result.doc.name}»`, 'ok');
     } else {
@@ -324,11 +332,17 @@ export async function promptOpenImage(app) {
   try {
     const file = await openFile('image');
     if (!file) return;
-    if (app.doc.layers.length === 1 && !app.doc.layers[0].contentRect) {
-      // пустой холст — кладём картинку в него
-      const doc = createDocument({ name: file.name });
+
+    // Пустой холст (один слой без пикселей) — открываем картинку как документ
+    const empty = app.doc.layers.length <= 1 && !app.doc.layers[0].contentRect;
+    if (empty) {
+      const doc = await imageToDocument(file);   // размер берём из самой картинки
       app.setDocument(doc);
+      app.markSaved();
+      notify(`Открыто ${doc.width}×${doc.height}`, 'ok');
+      return;
     }
+
     await imageToLayer(app, file);
     app.markChanged();
     notify(`Слой «${file.name}» добавлен`, 'ok');

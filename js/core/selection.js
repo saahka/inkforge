@@ -7,6 +7,7 @@
 
 import { Emitter } from './emitter.js';
 import { intersectRect, rectContainsRect } from '../utils/math.js';
+import { createLayerCanvas } from './layer.js';
 
 export class Selection extends Emitter {
   constructor(doc) {
@@ -16,12 +17,16 @@ export class Selection extends Emitter {
     this.rect = null;
     /** @type {HTMLCanvasElement|OffscreenCanvas|null} альфа-маска произвольной формы */
     this.mask = null;
+    /** Выделен весь документ (Ctrl+A): ни rect, ни mask */
+    this.all = false;
   }
 
-  get active() { return !!this.rect || !!this.mask; }
+  get active() { return this.all || !!this.rect || !!this.mask; }
   get isEmpty() { return !this.active; }
 
   setRect(rect, { record = false } = {}) {
+    this.mask = null;
+    this.all = false;
     this.rect = rect && rect.w >= 1 && rect.h >= 1 ? { ...rect } : null;
     this.emit('change', { record });
   }
@@ -30,24 +35,50 @@ export class Selection extends Emitter {
     if (!this.active) return;
     this.rect = null;
     this.mask = null;
+    this.all = false;
     this.emit('change');
   }
 
   /** Прямоугольник, в который нужно ограничить операцию (или весь документ) */
   clipRect() {
+    if (this.mask) {
+      // Произвольная форма: считаем её габариты, точность пока достаточная
+      return { x: 0, y: 0, w: this.doc.width, h: this.doc.height };
+    }
     if (!this.rect) return { x: 0, y: 0, w: this.doc.width, h: this.doc.height };
     return intersectRect(this.rect, { x: 0, y: 0, w: this.doc.width, h: this.doc.height })
       || { x: 0, y: 0, w: 0, h: 0 };
   }
 
-  /** Применяет выделение как clip к контексту слоя */
+  /** Применяет выделение как clip к контексту слоя (только прямоугольник) */
   clipContext(ctx) {
-    if (!this.active) return;
+    if (this.mask) {
+      // Произвольную форму так не обрежешь — вызывающий код должен
+      // использовать applyMask() (см. App.commitStroke)
+      ctx.rect(0, 0, this.doc.width, this.doc.height);
+      ctx.clip();
+      return;
+    }
+    if (!this.rect) return;
     ctx.beginPath();
-    if (this.mask) ctx.rect(0, 0, this.doc.width, this.doc.height);
-    else ctx.rect(this.rect.x, this.rect.y, this.rect.w, this.rect.h);
+    ctx.rect(this.rect.x, this.rect.y, this.rect.w, this.rect.h);
     ctx.clip();
-    if (this.mask) ctx.clip(this.mask, 'destination-in');
+  }
+
+  /**
+   * Возвращает canvas с исходником, обрезанным по маске выделения.
+   * Используется, когда выделение произвольной формы (или инвертировано):
+   * обычный clip по Path2D недоступен, поэтому маску применяем альфой.
+   */
+  applyMask(source, region) {
+    if (!this.mask) return source;
+    const out = createLayerCanvas(region.w, region.h);
+    const ctx = out.getContext('2d');
+    ctx.drawImage(source, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(this.mask, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+    ctx.globalCompositeOperation = 'source-over';
+    return out;
   }
 
   /** Полностью ли выделение покрывает слой — тогда clip избыточен */
@@ -58,10 +89,49 @@ export class Selection extends Emitter {
   /* ─── Трансформации выделения ────────────────────────────────── */
 
   selectAll() {
-    this.setRect({ x: 0, y: 0, w: this.doc.width, h: this.doc.height });
+    this.rect = null;
+    this.mask = null;
+    this.all = true;
+    this.emit('change');
   }
 
-  /** Растушевка краёв (в Фазе 1 — обрезка по расширенному прямоугольнику) */
+  /**
+   * Инверсия выделения: было прямоугольное → становится «всё, кроме него».
+   * Результат хранится альфа-маской (белым = выделено).
+   */
+  invert() {
+    if (!this.active || this.all) {
+      this.selectAll();       // нечего инвертировать — выделяем всё
+      return;
+    }
+    if (this.mask) {
+      // Инвертируем маску: белый ↔ прозрачный
+      const inv = createLayerCanvas(this.doc.width, this.doc.height);
+      const ctx = inv.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, inv.width, inv.height);
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.drawImage(this.mask, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      this.mask = inv;
+      this.rect = null;
+    } else {
+      const mask = createLayerCanvas(this.doc.width, this.doc.height);
+      const ctx = mask.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, mask.width, mask.height);
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = '#000';
+      ctx.fillRect(this.rect.x, this.rect.y, this.rect.w, this.rect.h);
+      ctx.globalCompositeOperation = 'source-over';
+      this.mask = mask;
+      this.rect = null;
+    }
+    this.all = false;
+    this.emit('change');
+  }
+
+  /** Растушевка краёв (Фаза 1: расширение прямоугольника на указанное число пикселей) */
   feather(px) {
     if (!this.rect) return;
     this.setRect({
@@ -77,11 +147,16 @@ export class Selection extends Emitter {
   }
 
   serialize() {
-    return this.rect ? { rect: { ...this.rect } } : null;
+    // Маску в файл не пишем (Фаза 2 — PNG в base64), но и не теряем молча:
+    // прямоугольное выделение сохраняется как есть
+    if (this.all) return { all: true };
+    return this.rect ? { rect: { ...this.rect } } : (this.mask ? { masked: true } : null);
   }
 
   restore(state) {
+    this.all = !!state?.all;
     this.rect = state?.rect ? { ...state.rect } : null;
+    this.mask = null;
     this.emit('change');
   }
 }

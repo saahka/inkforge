@@ -46,7 +46,7 @@ export function brushTool(app) {
         app.emit('toast', { text: 'Слой заблокирован', kind: 'error' });
         return;
       }
-      drawing = app.beginStroke(c, { composite: 'source-over', tool: 'brush' });
+      drawing = app.beginStroke(toStrokePoint(c), { composite: 'source-over', tool: 'brush' });
     },
 
     onPointerMove(c) {
@@ -71,11 +71,13 @@ export function brushTool(app) {
     drawOverlay(ctx, renderer) {
       const brush = app.brush;
       // Кольцо показывает размер при текущем давлении, если динамика включена
-      const size = dynamicSize(brush, { pressure: 1, tilt: renderer.cursorPressure || 0 });
+      const size = dynamicSize(brush, {
+        pressure: renderer.cursorPressure ?? 1,
+        tilt: renderer.cursorTilt ?? 0,
+      });
       renderer.drawBrushCursor(ctx, size / 2);
 
-      if (brush.size < 2) return;
-      // Кольцо предсказания — показывает, куда «уйдёт» перо
+      // «Призрак» предсказанного продолжения штриха
       if (app.stroke.active && app.stroke.prediction) {
         renderer.drawPrediction(ctx, app.stroke.prediction, brush);
       }

@@ -51,14 +51,14 @@ function renderMenu(items, x, y, { minWidth = 210 } = {}) {
 
   const onDown = (e) => { if (!menu.contains(e.target)) close(); };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
-  setTimeout(() => {
-    document.addEventListener('pointerdown', onDown, { capture: true, once: true });
-    document.addEventListener('keydown', onKey);
-  }, 0);
+  document.addEventListener('keydown', onKey);
+  // Регистрируем после отрисовки, иначе тот же клик, который открыл меню, его же закроет
+  setTimeout(() => document.addEventListener('pointerdown', onDown, { capture: true }), 0);
 
   function close() {
     host.classList.remove('is-open');
     host.replaceChildren();
+    document.removeEventListener('pointerdown', onDown, { capture: true });
     document.removeEventListener('keydown', onKey);
     closeCurrent = null;
   }
@@ -196,24 +196,30 @@ function cropToSelection(app) {
 /** Инициализация верхней строки меню */
 export function initMenus(app) {
   const host = qs('#menus');
-  const rebuild = () => {
+
+  /** Пункты меню — либо массив, либо функция (для пунктов со сменой состояния) */
+  const itemsOf = (def) => (typeof def.items === 'function' ? def.items() : def.items);
+
+  function rebuild() {
     const defs = buildMenuDefinition(app);
     host.replaceChildren(...defs.map((def) => {
       const btn = el('button.menu-item', { type: 'button', text: def.label });
-      btn.addEventListener('click', () => showDropdown(btn, def.items()));
+      btn.addEventListener('click', () => showDropdown(btn, itemsOf(def)));
       btn.addEventListener('pointerenter', () => {
         // Если меню уже открыто — переключаемся на соседний пункт
         if (qs('.menu-layer.is-open') && btn !== host.querySelector('.is-open')) {
-          showDropdown(btn, def.items());
+          showDropdown(btn, itemsOf(def));
         }
       });
       return btn;
     }));
-  };
+  }
 
   app.on('history', rebuild);
   app.on('tool', rebuild);
-  app.layers.on('change', debounced(rebuild));
+  // app.layers пересоздаётся при смене документа — слушаем App
+  app.on('layers', debounced(rebuild));
+  app.on('selection', rebuild);
   app.on('doc', rebuild);
 
   rebuild();

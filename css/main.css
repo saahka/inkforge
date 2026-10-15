@@ -322,19 +322,7 @@ input[type="color"] {
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
 
-/* ─── Подсказка и уведомления ──────────────────────────────── */
-
-.tooltip {
-  position: fixed;
-  z-index: 400;
-  padding: 3px 7px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  box-shadow: var(--shadow-1);
-  pointer-events: none;
-  white-space: nowrap;
-}
+/* ─── Уведомления ──────────────────────────────────────────────── */
 
 .toasts {
   position: fixed;

@@ -109,6 +109,23 @@
   cursor: crosshair;
 }
 
+/* Подсветка при перетаскивании файла в окно */
+body.is-dragover .stage::after {
+  content: "Отпустите, чтобы открыть изображение";
+  position: absolute;
+  inset: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--r-lg);
+  background: rgba(76, 141, 255, .08);
+  color: var(--accent);
+  font-size: 14px;
+  pointer-events: none;
+  z-index: 10;
+}
+
 /* Курсор задаётся из JS через data-cursor на .stage */
 .stage[data-cursor="grab"] { cursor: grab; }
 .stage[data-cursor="grabbing"] { cursor: grabbing; }

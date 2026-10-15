@@ -47,9 +47,9 @@ export function initStatusBar(app) {
   app.viewport.on('change', updateZoom);
   app.on('zoom', updateZoom);
 
-  /* Размер и слои */
+  /* Размер и слои — через события App: app.layers пересоздаётся при open/новом доке */
   app.on('doc', updateSize);
-  app.layers.on('change', updateSize);
+  app.on('layers', updateSize);
 
   /* Состояние сохранения */
   let saveTimer = 0;
@@ -81,9 +81,13 @@ export function initStatusBar(app) {
   return {
     toggleMemory() {
       memVisible = !memVisible;
-      if (!memVisible) { save.textContent = app.dirtySinceSave ? 'есть изменения' : 'сохранено'; return; }
+      if (!save) return;
+      if (!memVisible) {
+        save.textContent = app.dirtySinceSave ? 'есть изменения' : 'сохранено';
+        return;
+      }
       const tick = () => {
-        if (!memVisible) return;
+        if (!memVisible || !save) return;
         const h = app.history;
         save.textContent = `история ${h.entries.length} шаг. · ${formatBytes(h.bytes)} · ${app.doc.layers.length} слоёв`;
         setTimeout(tick, 500);

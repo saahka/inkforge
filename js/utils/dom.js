@@ -2,6 +2,16 @@
 
 /** el('div.cls#id', {attr}, children) */
 export function el(spec, props = null, children = null) {
+  // Ловушка прошлого бага: лишние аргументы молча терялись, и целые
+  // блоки интерфейса просто не появлялись. Лучше упасть сразу.
+  if (arguments.length > 3) {
+    throw new TypeError(`el() принял ${arguments.length} аргументов, максимум 3 — проверь вызов в строке (${new Error().stack?.split('\n')[2]?.trim() || '?'})`);
+  }
+  // Дети, переданные вторым аргументом, тоже исчезали бы молча
+  if (props && (Array.isArray(props) || props instanceof Node)) {
+    throw new TypeError('el(): второй аргумент — свойства, дети идут третьим: el(тег, null, [дети])');
+  }
+
   const [tagAndId, ...classes] = spec.split('.');
   const [tag, id] = tagAndId.split('#');
   const node = document.createElement(tag || 'div');
@@ -84,7 +94,10 @@ export function bindDropZone(node, onFiles) {
   ['dragenter', 'dragover', 'dragleave', 'drop'].forEach((t) =>
     node.addEventListener(t, stop));
   node.addEventListener('dragover', () => node.classList.add('is-dragover'));
-  node.addEventListener('dragleave', () => node.classList.remove('is-dragover'));
+  node.addEventListener('dragleave', (e) => {
+    // Убираем подсветку, только когда курсор действительно ушёл из окна
+    if (e.relatedTarget === null) node.classList.remove('is-dragover');
+  });
   node.addEventListener('drop', (e) => {
     node.classList.remove('is-dragover');
     const files = [...(e.dataTransfer?.files || [])];

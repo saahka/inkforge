@@ -105,16 +105,16 @@ export function initToolPanel(app) {
 
     body.append(
       previewBox,
-      slider('Размер', 'size', app.activeBrush.size, 1, 2000, 1, (v) => app[bind]({ size: v })),
-      slider('Непрозрачность', 'opacity', Math.round(app.activeBrush.opacity * 100), 1, 100, 1,
+      slider('Размер', app.activeBrush.size, 1, 2000, 1, (v) => app[bind]({ size: v })),
+      slider('Непрозрачность', Math.round(app.activeBrush.opacity * 100), 1, 100, 1,
         (v) => app[bind]({ opacity: v / 100 })),
-      slider('Поток', 'flow', Math.round(app.activeBrush.flow * 100), 1, 100, 1,
+      slider('Поток', Math.round(app.activeBrush.flow * 100), 1, 100, 1,
         (v) => app[bind]({ flow: v / 100 })),
-      slider('Жёсткость', 'hardness', Math.round(app.activeBrush.hardness * 100), 0, 100, 1,
+      slider('Жёсткость', Math.round(app.activeBrush.hardness * 100), 0, 100, 1,
         (v) => app[bind]({ hardness: v / 100 })),
-      slider('Шаг', 'spacing', Math.round(app.activeBrush.spacing * 100), 1, 60, 1,
+      slider('Шаг', Math.round(app.activeBrush.spacing * 100), 1, 60, 1,
         (v) => app[bind]({ spacing: v / 100 })),
-      slider('Сглаживание', 'smoothing', Math.round(app.activeBrush.smoothing * 100), 0, 95, 1,
+      slider('Сглаживание', Math.round(app.activeBrush.smoothing * 100), 0, 95, 1,
         (v) => app[bind]({ smoothing: v / 100 })),
     );
 
@@ -166,7 +166,7 @@ export function initToolPanel(app) {
 
     if (tool.id === 'fill') {
       body.append(
-        slider('Допуск', 'tolerance', s.tolerance, 0, 128, 1, (v) => { s.tolerance = v; }),
+        slider('Допуск', s.tolerance, 0, 128, 1, (v) => { s.tolerance = v; }),
         check('Все слои', s.sampleAllLayers, (v) => { s.sampleAllLayers = v; }),
         check('Непрерывная область', s.contiguous, (v) => { s.contiguous = v; }),
         el('p.field__label', { text: 'Shift+клик — заливка фоновым цветом.' }),
@@ -183,7 +183,7 @@ export function initToolPanel(app) {
 
     if (tool.id === 'marquee') {
       body.append(
-        slider('Растушевка', 'feather', s.feather || 0, 0, 64, 1, (v) => { s.feather = v; }),
+        slider('Растушевка', s.feather || 0, 0, 64, 1, (v) => { s.feather = v; }),
         el('p.field__label', { text: 'Протяните прямоугольник. Ctrl+A — всё, Ctrl+D — снять.' }),
       );
     }
@@ -221,7 +221,7 @@ export function initToolPanel(app) {
 
 /* ─── Вспомогательные элементы формы ──────────────────────────────── */
 
-function slider(label, key, value, min, max, step, onInput) {
+function slider(label, value, min, max, step, onInput) {
   const num = el('input.field__num', {
     type: 'number', min, max, step, value,
     onchange: (e) => onInput(clamp(+e.target.value, min, max)),
@@ -517,7 +517,7 @@ export function initColorPanel(app) {
   };
 
   const renderRecent = () => {
-    const list = loadRecent();
+    const list = app.recentColors || loadRecent();
     recentBox.replaceChildren(
       ...(list.length ? list : []).map((hexColor) => el('button.palette__cell', {
         type: 'button', style: { background: hexColor }, title: hexColor,
@@ -580,11 +580,12 @@ export function initColorPanel(app) {
   }
 
   app.on('color', update);
+  app.on('recent', renderRecent);
   renderPalette();
   renderRecent();
   update();
 
-  return { update, renderPalette };
+  return { update, renderPalette, renderRecent };
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -752,9 +753,14 @@ export function initLayersPanel(app) {
       e.preventDefault();
       const id = e.dataTransfer.getData('text/plain');
       if (!id || id === layer.id) return;
-      const after = row.classList.contains('layer-drop-after');
+      const afterDrop = row.classList.contains('layer-drop-after');
       const targetIndex = app.doc.indexOf(layer.id);
-      app.layers.reorderLayer(id, after ? targetIndex : targetIndex + 1);
+      const after = targetIndex + (afterDrop ? 0 : 1);
+      // Индекс считается в массиве до удаления перетаскиваемого слоя,
+      // поэтому при движении вниз его нужно скорректировать на 1
+      const from = app.doc.indexOf(id);
+      const finalIndex = from < targetIndex ? after - 1 : after;
+      app.layers.reorderLayer(id, finalIndex);
     });
 
     return row;
@@ -820,8 +826,11 @@ export function initLayersPanel(app) {
     });
   }
 
-  app.layers.on('change', () => {
+  // Подписываемся на события App, а не на app.layers: менеджер слоёв
+  // пересоздаётся при открытии файла, и прямая подписка «слепла бы» после этого
+  app.on('layers', ({ structural } = {}) => {
     render();
+    if (!structural) return;
     // Превью обновляем отложенно — чтобы не тормозить рисование
     clearTimeout(render._t);
     render._t = setTimeout(() => {
@@ -831,6 +840,17 @@ export function initLayersPanel(app) {
       }
     }, 250);
   });
+
+  // После штрихов пиксели слоя меняются, но структура стека — нет
+  const refreshActiveThumb = debounce(() => {
+    const l = app.doc.activeLayer;
+    if (!l) return;
+    app.layers.invalidateThumb(l.id);
+    const node = list.querySelector(`[data-id="${l.id}"]`);
+    if (node) refreshThumb(l, node);
+  }, 400);
+  app.on('stroke', refreshActiveThumb);
+  app.on('tool', () => { app.previewStroke = null; });
   app.on('doc', render);
 
   render();

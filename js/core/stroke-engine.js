@@ -34,6 +34,7 @@ export class StrokeEngine {
   }
 
   _reset() {
+    this.active = false;      // любой сброс состояния закрывает штрих
     this.layer = null;
     this.brush = null;
     this.composite = 'source-over';
@@ -60,12 +61,25 @@ export class StrokeEngine {
    * @param {import('./selection.js').Selection} [o.selection]
    */
   begin({ layer, brush, point, composite = 'source-over', selection = null }) {
+    // Если штрих уже идёт (например, повторный вызов инструментом) —
+    // сначала закрываем предыдущий, иначе потеряется ctx.save() в прямом режиме
+    if (this.active) this.cancel();
+
     this._reset();
     this.layer = layer;
     this.brush = brush;
     this.composite = composite;
     this.selection = selection;
     this.active = true;
+
+    // Точка от нормализованных событий: гарантируем числовые pressure/tilt
+    const start = {
+      x: point.x,
+      y: point.y,
+      pressure: Number.isFinite(point.pressure) ? point.pressure : 1,
+      tilt: Number.isFinite(point.tilt) ? point.tilt : 0,
+      t: point.t,
+    };
 
     const buf = this.getBuffer();
     if (buf) {
@@ -84,13 +98,13 @@ export class StrokeEngine {
       if (selection?.active) selection.clipContext(ctx);
     }
 
-    this.raw = { ...point };
-    this.prevRaw = { ...point };
-    this.path = [{ ...point }];
-    this.tip = { x: point.x, y: point.y };
+    this.raw = { ...start };
+    this.prevRaw = { ...start };
+    this.path = [{ ...start }];
+    this.tip = { x: start.x, y: start.y };
 
     // Первый dab — всегда в точке нажатия
-    this.#stampAt(point, point);
+    this.#stampAt(start, start);
   }
 
   /* ─── Продолжение штриха ─────────────────────────────────────── */
@@ -129,11 +143,17 @@ export class StrokeEngine {
     const k = 1 - this.brush.smoothing * 0.85;   // 1 — без сглаживания
     const prev = this.path[this.path.length - 1];
     if (!prev) return { ...p };
+    // Первая точка приходит из сырого события указателя и может не иметь
+    // pressure/tilt — приводим всё к числам, иначе по штриху пойдёт NaN
+    const pressure = Number.isFinite(p.pressure) ? p.pressure : 1;
+    const tilt = Number.isFinite(p.tilt) ? p.tilt : 0;
+    const prevPressure = Number.isFinite(prev.pressure) ? prev.pressure : 1;
+    const prevTilt = Number.isFinite(prev.tilt) ? prev.tilt : 0;
     return {
       x: prev.x + (p.x - prev.x) * k,
       y: prev.y + (p.y - prev.y) * k,
-      pressure: prev.pressure + ((p.pressure ?? 1) - prev.pressure) * Math.min(1, k * 1.4),
-      tilt: prev.tilt + ((p.tilt ?? 0) - prev.tilt) * k,
+      pressure: prevPressure + (pressure - prevPressure) * Math.min(1, k * 1.4),
+      tilt: prevTilt + (tilt - prevTilt) * k,
       t: p.t,
     };
   }
@@ -175,11 +195,12 @@ export class StrokeEngine {
   }
 
   /**
-   * Ставит dab в точку p, предварительно «добивая» расстояние от прошлого
-   * штампа, чтобы не было пробелов при быстром движении.
+   * Ставит dab в точку p. Если между прошлым штампом и p набралось
+   * расстояние больше шага — «добиваем» его промежуточными штампами,
+   * иначе при быстром движении появляются пробелы.
    */
   #stampAt(p, ref) {
-    if (!this.tip) { this.tip = { x: p.x, y: p.y }; }
+    if (!this.tip) this.tip = { x: p.x, y: p.y };
     const step = this.#stepFor(p);
     const dx = p.x - this.tip.x;
     const dy = p.y - this.tip.y;
@@ -196,13 +217,13 @@ export class StrokeEngine {
           tilt: p.tilt,
         }, ref);
       }
-      const left = d - count * step;
-      this.carry = left;
+      this.carry = d - count * step;
     } else {
       this.carry += d;
     }
 
-    // Всё равно ставим dab в конечную точку сегмента с накопленной плотностью
+    // Ставим dab и в конечную точку: так штрих точно доходит до курсора,
+    // а carry не даёт накапливать плотность при медленном движении
     this.#putDab(p, ref);
   }
 
@@ -260,11 +281,11 @@ export class StrokeEngine {
 
     if (this.direct) {
       // Прямой режим: пиксели уже в слое, осталось снять clip/composite
+      const dirty = this.getDirtyRect();
       this.layer?.ctx.restore();
-      this.layer?.markDirty(this.dirty);
-      this.active = false;
-      this.prediction = null;
-      return { buffer: null, dirty: this.getDirtyRect(), composite: this.composite, direct: true };
+      this.layer?.markDirty(dirty);
+      this._reset();
+      return { buffer: null, dirty, composite: this.composite, direct: true };
     }
 
     const result = {
@@ -273,8 +294,7 @@ export class StrokeEngine {
       composite: this.composite,
       direct: false,
     };
-    this.active = false;
-    this.prediction = null;
+    this._reset();
     return result;
   }
 

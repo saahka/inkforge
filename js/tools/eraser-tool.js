@@ -26,7 +26,7 @@ export function eraserTool(app) {
         app.emit('toast', { text: 'Прозрачность слоя заблокирована', kind: 'error' });
         return;
       }
-      drawing = app.beginStroke(c, { composite: 'destination-out', tool: 'eraser' });
+      drawing = app.beginStroke(toStrokePoint(c), { composite: 'destination-out', tool: 'eraser' });
     },
 
     onPointerMove(c) {
