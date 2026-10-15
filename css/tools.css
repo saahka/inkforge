@@ -1,0 +1,194 @@
+/* ============================================================
+   ЛЕВАЯ ПАНЕЛЬ ИНСТРУМЕНТОВ + ОБЛАСТЬ ХОЛСТА
+   ============================================================ */
+
+/* ─── Тулбар ───────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0;
+  background: var(--bg-chrome);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+.toolbar__group { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.toolbar__spacer { flex: 1; }
+.toolbar__divider { width: 24px; height: 1px; background: var(--border); margin: 5px 0; }
+
+.tool-btn {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.tool-btn svg { width: 19px; height: 19px; }
+.tool-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.tool-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent-hover);
+  color: var(--accent-fg);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
+}
+
+/* Буква-подсказка вместо иконки (Alt+цифра) */
+.tool-btn::after {
+  content: attr(data-key);
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+.toolbar.show-keys .tool-btn::after { display: flex; }
+.toolbar.show-keys .tool-btn svg { display: none; }
+
+/* Индикатор давления пера */
+.pressure-meter {
+  width: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.pressure-meter__bar {
+  width: 8px;
+  height: 64px;
+  border-radius: 4px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+.pressure-meter__bar i {
+  display: block;
+  width: 100%;
+  height: 0%;
+  background: linear-gradient(to top, var(--accent), var(--ok));
+  transition: height .05s linear;
+}
+.pressure-meter__label { font-size: 9px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+
+/* ─── Сцена / холст ────────────────────────────────────────── */
+
+.stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-canvas);
+  overflow: hidden;
+  /* Шахматный фон рабочей области */
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, .015) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, .015) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, .015) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, .015) 75%);
+  background-size: 24px 24px;
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+}
+
+.stage__viewport {
+  position: absolute;
+  inset: 0;
+  touch-action: none;          /* Pointer Events: жесты обрабатываем сами */
+  cursor: crosshair;
+}
+
+/* Курсор задаётся из JS через data-cursor на .stage */
+.stage[data-cursor="grab"] { cursor: grab; }
+.stage[data-cursor="grabbing"] { cursor: grabbing; }
+.stage[data-cursor="zoom-in"] { cursor: zoom-in; }
+.stage[data-cursor="crosshair"] { cursor: crosshair; }
+.stage[data-cursor="move"] { cursor: move; }
+.stage[data-cursor="default"] { cursor: default; }
+
+.stage__canvas,
+.stage__overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* Оверлей ничего не принимает — события слушает .stage__viewport */
+.stage__overlay { pointer-events: none; }
+
+/* Рамка документа (тень/граница) рисуется в оверлее */
+
+/* Плавающий индикатор масштаба */
+.zoom-hud {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+  opacity: .9;
+}
+.zoom-hud:hover { opacity: 1; }
+.zoom-hud__value {
+  min-width: 52px;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.zoom-hud__value:hover { background: var(--bg-hover); }
+
+/* Индикатор сохранения поверх холста */
+.save-hud {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  color: var(--fg-muted);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  transition: opacity .2s;
+}
+.save-hud.is-visible { opacity: 1; }
+
+/* Диалог с ошибкой загрузки WebGL/IndexedDB */
+.stage__fatal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  background: var(--bg-canvas);
+  color: var(--fg-muted);
+}
+
+/* Курсоры инструментов на холсте */
+.cursor-paint { cursor: none; }        /* кольцо кисти рисуем в оверлее */

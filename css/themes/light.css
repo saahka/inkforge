@@ -1,0 +1,39 @@
+/* ============================================================
+   СВЕТЛАЯ ТЕМА — переопределяет только переменные
+   ============================================================ */
+
+:root[data-theme="light"] {
+  --bg-app: #e9ecf1;
+  --bg-chrome: #f7f8fa;
+  --bg-chrome-2: #eef0f4;
+  --bg-panel: #ffffff;
+  --bg-input: #ffffff;
+  --bg-canvas: #c9ced8;
+  --bg-hover: #e3e7ee;
+  --bg-active: #d3dae6;
+  --bg-sunken: #f2f4f8;
+
+  --fg: #1c2128;
+  --fg-muted: #5b6572;
+  --fg-faint: #8b94a1;
+  --fg-invert: #ffffff;
+
+  --accent: #1f6feb;
+  --accent-hover: #1a5fd0;
+  --accent-fg: #ffffff;
+  --danger: #d1242f;
+  --warn: #9a6700;
+  --ok: #1a7f37;
+
+  --border: #d8dee7;
+  --border-strong: #bfc7d2;
+
+  --track: #e6eaf0;
+  --thumb: #5b6572;
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, .08);
+  --shadow-2: 0 8px 24px rgba(16, 24, 40, .12);
+  --shadow-3: 0 18px 48px rgba(16, 24, 40, .18);
+
+  color-scheme: light;
+}

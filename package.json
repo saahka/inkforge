@@ -1,0 +1,19 @@
+{
+  "name": "inkforge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "InkForge — программа для цифрового рисования в браузере (Canvas2D + Pointer Events)",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "node tools/check-imports.mjs js",
+    "test": "node tools/smoke-test.mjs",
+    "test:browser": "node tools/browser-test.mjs"
+  },
+  "devDependencies": {
+    "vite": "^5.4.10"
+  }
+}
